@@ -122,7 +122,7 @@ func (a *App) routes() {
 	protected.Get("/articles/:id", a.handleArticleDetail)
 }
 
-// newScraper builds a Scraper from app deps (both NHK sources always).
+// newScraper builds a Scraper from app deps (all DefaultSources; scrape is always multi-feed).
 func (a *App) newScraper() *scrape.Scraper {
 	var client scrape.HTTPDoer = a.HTTPClient
 	if client == nil {

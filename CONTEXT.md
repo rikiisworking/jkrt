@@ -33,8 +33,8 @@ One RSS item turned into stored text (title + feed body/summary fields available
 _Avoid_: Story, full webpage, HTML document
 
 **Source**:
-A configured **RSS feed** the learner may Scrape (user-triggered). v1 Sources are **NHK main** and **NHK Easy** (two feeds, same publisher family). Main has a known public RSS URL in the development plan; Easy may be fixture-only until a live RSS URL is configured. Other publishers are out of scope.
-_Avoid_: Scraper (the mechanism), arbitrary multi-site news, HTML site crawl
+A configured **RSS feed** the learner may Scrape (user-triggered). Built-in Sources include **NHK main**, **NHK Easy** (optional URL), plus other public Japanese RSS defaults (Yahoo! major topics, ITmedia NEWS, BBC Japanese) with hardcoded feed URLs in `internal/scrape`. Scrape always pulls **all** configured Sources. Still **RSS only** — no HTML page crawl.
+_Avoid_: Scraper (the mechanism), HTML site crawl, paywalled full-article fetch
 
 **Word candidate**:
 A Token that contains at least one kanji **and** has a non-empty Reading. Only Word candidates enter the learning model as Words. Pure-kana Tokens and Tokens with empty readings are ignored in v1.
@@ -73,7 +73,7 @@ One learner judgment on a **single Word** (its Card), shown in the context of a 
 _Avoid_: Study session (the whole sitting), quiz, sentence grade (v1 does not grade the whole Sentence)
 
 **Scrape**:
-A user-triggered fetch that **always pulls both** v1 Sources (NHK main RSS and NHK Easy RSS) into Articles and Sentences. RSS only — title/description/content fields from each feed item. No HTML page fetch, no goquery article scrape. No per-feed picker in v1.
+A user-triggered fetch that **always pulls every configured Source** (built-in multi-publisher RSS list) into Articles and Sentences. RSS only — title/description/content fields from each feed item. No HTML page fetch, no goquery article scrape. No per-feed picker in v1 (partial success per source is OK).
 _Avoid_: Crawl, HTML scrape, sync, import (unless manual paste), selective single-feed scrape (v1)
 
 **Learner**:

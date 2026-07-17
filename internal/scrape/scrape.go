@@ -1,4 +1,4 @@
-// Package scrape fetches dual NHK RSS feeds and ingests Articles via db.IngestArticle.
+// Package scrape fetches configured RSS feeds and ingests Articles via db.IngestArticle.
 package scrape
 
 import (
@@ -14,14 +14,26 @@ import (
 	"github.com/rikiisworking/jkrt/internal/db"
 )
 
-// v1 Source names (news_sources.name).
+// Source names (news_sources.name). Stable identifiers for UI/JSON and DB rows.
 const (
-	SourceNHKMain = "nhk_main"
-	SourceNHKEasy = "nhk_easy"
+	SourceNHKMain     = "nhk_main"
+	SourceNHKEasy     = "nhk_easy"
+	SourceYahooTopics = "yahoo_topics"
+	SourceITmediaNews = "itmedia_news"
+	SourceBBCJapanese = "bbc_japanese"
 )
 
-// DefaultMainRSSURL is the verified NHK main cat0 feed (DEVELOPMENT_PLAN.md).
-const DefaultMainRSSURL = "https://news.web.nhk/n-data/conf/na/rss/cat0.xml"
+// Default feed URLs (hardcoded; NHK main/easy may be overridden via config env).
+const (
+	// DefaultMainRSSURL is the verified NHK main cat0 feed (DEVELOPMENT_PLAN.md).
+	DefaultMainRSSURL = "https://news.web.nhk/n-data/conf/na/rss/cat0.xml"
+	// DefaultYahooTopicsRSSURL is Yahoo!ニュース major topics (Japanese, RSS 2.0).
+	DefaultYahooTopicsRSSURL = "https://news.yahoo.co.jp/rss/topics/top-picks.xml"
+	// DefaultITmediaNewsRSSURL is ITmedia NEWS latest list (Japanese, RSS 2.0).
+	DefaultITmediaNewsRSSURL = "https://rss.itmedia.co.jp/rss/2.0/news_bursts.xml"
+	// DefaultBBCJapaneseRSSURL is BBC News 日本語 (RSS 2.0).
+	DefaultBBCJapaneseRSSURL = "https://feeds.bbci.co.uk/japanese/rss.xml"
+)
 
 // DefaultTimeout is the per-feed HTTP timeout.
 const DefaultTimeout = 15 * time.Second
@@ -51,7 +63,7 @@ type Result struct {
 	Sources []SourceResult `json:"sources"`
 }
 
-// Scraper fetches both NHK feeds and calls IngestArticle per item.
+// Scraper fetches every configured Source and calls IngestArticle per item.
 type Scraper struct {
 	Client   HTTPDoer
 	DB       *db.DB
@@ -61,8 +73,10 @@ type Scraper struct {
 	UserID   int64
 }
 
-// DefaultSources returns the v1 dual-NHK source list from configured URLs.
+// DefaultSources returns the built-in multi-publisher RSS list.
+// mainURL/easyURL override NHK defaults (empty main → DefaultMainRSSURL).
 // Easy URL may be empty (soft-fail at scrape time until JKRT_NHK_EASY_RSS_URL is set).
+// Extra publishers use hardcoded defaults (same style as NHK main).
 func DefaultSources(mainURL, easyURL string) []Source {
 	if strings.TrimSpace(mainURL) == "" {
 		mainURL = DefaultMainRSSURL
@@ -77,6 +91,21 @@ func DefaultSources(mainURL, easyURL string) []Source {
 			Name:    SourceNHKEasy,
 			FeedURL: strings.TrimSpace(easyURL),
 			Notes:   "NHK Easy RSS (optional URL until configured)",
+		},
+		{
+			Name:    SourceYahooTopics,
+			FeedURL: DefaultYahooTopicsRSSURL,
+			Notes:   "Yahoo!ニュース 主要トピックス RSS",
+		},
+		{
+			Name:    SourceITmediaNews,
+			FeedURL: DefaultITmediaNewsRSSURL,
+			Notes:   "ITmedia NEWS 最新記事 RSS",
+		},
+		{
+			Name:    SourceBBCJapanese,
+			FeedURL: DefaultBBCJapaneseRSSURL,
+			Notes:   "BBC News 日本語 RSS",
 		},
 	}
 }

@@ -3,8 +3,8 @@
 ## Overall goals
 
 - Local Mac web app (Go + Fiber) usable on iPhone via Cloudflare Tunnel (HTTPS).
-- Pipeline: user-triggered **RSS Scrape** (NHK main + NHK Easy) → Sentences → morphological analysis → **Word** candidates → **Card** scheduling → sentence-context Review.
-- Target: real news density (main) plus easier volume (Easy); learning goal N1-oriented **reading** of kanji-bearing words.
+- Pipeline: user-triggered **RSS Scrape** (multi-publisher defaults) → Sentences → morphological analysis → **Word** candidates → **Card** scheduling → sentence-context Review.
+- Target: real Japanese news density from several public RSS feeds; learning goal N1-oriented **reading** of kanji-bearing words.
 - UX: minimal friction, mobile-first, blue theme, **no default furigana** (reveal on demand).
 - Single Learner. Local SQLite. User-triggered scrape only. **RSS only** (no HTML article fetch).
 
@@ -56,8 +56,8 @@ Full definitions: `CONTEXT.md`. Do not contradict:
 | **Scheduler** | [`docs/sm2-spec.md`](docs/sm2-spec.md) only |
 | **Unfamiliar highlight** | See locked predicate below |
 | **Queue** | Due first, then new; 20 new/day (first grade), 40 reviews/UTC day (`SessionLimit`) |
-| **Sources** | NHK main + NHK Easy |
-| **Scrape** | Always both; RSS fields only |
+| **Sources** | Multi-publisher RSS defaults (`DefaultSources`) |
+| **Scrape** | Always all configured; RSS fields only |
 | **Lexicon** | Analyzer only (no gloss/JLPT seed) |
 | **Auth** | Password + signed session before public tunnel |
 | **Analyzer lib** | **Kagome** (IPA), pure-Go |
@@ -99,7 +99,7 @@ Single Learner; `users.id = 1` for v1.
 | Column | Type | Notes |
 |--------|------|--------|
 | id | INTEGER PK | |
-| name | TEXT | `nhk_main`, `nhk_easy` |
+| name | TEXT | e.g. `nhk_main`, `yahoo_topics`, … |
 | feed_url | TEXT | See seed URLs below |
 | enabled | INTEGER | 1 for both in v1 |
 | notes | TEXT | |
@@ -235,26 +235,32 @@ Example fixture sentence (for tests):
 
 ### Seed sources (defaults)
 
+Hardcoded in `internal/scrape.DefaultSources` (same pattern as original NHK main). NHK main/easy URLs overridable via env.
+
 | name | Default feed_url | Notes |
 |------|------------------|--------|
-| `nhk_main` | `https://news.web.nhk/n-data/conf/na/rss/cat0.xml` | Verified 2026-07-17 (XML RSS; title+description). Legacy redirects from `www.nhk.or.jp/rss/news/cat0.xml` may exist. |
-| `nhk_easy` | *(config required — see below)* | No stable public **RSS** verified 2026-07-17 (easy JSON endpoints returned 401). **Tests use fixtures.** Live URL via `JKRT_NHK_EASY_RSS_URL` after you confirm a working RSS; until set, Scrape still attempts both: main must succeed, easy may fail soft with logged error. |
+| `nhk_main` | `https://news.web.nhk/n-data/conf/na/rss/cat0.xml` | Verified 2026-07-17 (XML RSS; title+description). Override: `JKRT_NHK_MAIN_RSS_URL`. |
+| `nhk_easy` | *(empty until configured)* | No stable public **RSS** verified 2026-07-17. Live URL via `JKRT_NHK_EASY_RSS_URL`; soft-fail when empty. Tests use fixtures. |
+| `yahoo_topics` | `https://news.yahoo.co.jp/rss/topics/top-picks.xml` | Yahoo!ニュース major topics (JA). Often title-heavy. |
+| `itmedia_news` | `https://rss.itmedia.co.jp/rss/2.0/news_bursts.xml` | ITmedia NEWS latest (JA). |
+| `bbc_japanese` | `https://feeds.bbci.co.uk/japanese/rss.xml` | BBC News 日本語. |
 
-**Agent rules for Easy:**
+**Agent rules for feeds:**
 
-1. Ship `testdata/rss/nhk_easy_sample.xml` shaped like main RSS (title, link, guid, description).  
-2. Do **not** add HTML scrape to “fix” Easy.  
+1. Ship fixtures under `testdata/rss/` for parse tests; no live network in `go test`.  
+2. Do **not** add HTML scrape or goquery to fill short RSS bodies.  
 3. Do **not** use non-RSS JSON as a silent substitute without updating this plan + ADR 0003.  
-4. When a real Easy RSS URL is known, put it in env/seed and note the date in Progress log.
+4. Adding another Source: append to `DefaultSources` with a stable `name` + public RSS 2.0 URL; keep partial success.  
+5. When a real Easy RSS URL is known, put it in env and note the date in Progress log.
 
 ### Behavior
 
-- One Scrape fetches **both** enabled sources sequentially (timeout per feed, e.g. 15s).  
+- One Scrape fetches **all** configured sources sequentially (timeout per feed, e.g. 15s).  
 - Parse RSS 2.0; `raw_text = title + "\n" + description` (and content:encoded if present).  
 - Dedupe `(source_id, external_id)`.  
 - Sentence split on `。！？` and fullwidth variants.  
 - Then analyze pipeline.  
-- Partial success OK if one feed fails (return 200/207-style JSON with per-source errors — see HTTP table).
+- Partial success OK if one feed fails (return 200 JSON with per-source errors — see HTTP table).
 
 ---
 
@@ -578,6 +584,7 @@ go test ./... -count=1
 
 | Date | Note |
 |------|------|
+| 2026-07-17 | Multi-publisher RSS: `DefaultSources` adds `yahoo_topics`, `itmedia_news`, `bbc_japanese` (hardcoded public RSS 2.0 URLs); scrape still sequential + partial success; docs/ADR 0003/CONTEXT updated. |
 | 2026-07-17 | Architecture deepen: `snapshot.Load` composes queue+library for dashboard/stats/export; mature counts use `schedule.Params` (no forked 21); `http.New` syncs Review.Params onto DB (single boot path). |
 | 2026-07-17 | Phase 6 **complete**: `/api/stats`, `/api/export` JSON/CSV, dashboard library/export links, `002_perf.sql` indexes, raw_text truncate + export caps; export fixture tests. v1 phase plan complete. |
 | 2026-07-17 | Phase 5 **complete**: cookie/TTL docs, password rotate (`cmd/setpassword`), tunnel guide (never auth off), expired-session HTTP 302/401 tests, login `MaxAge`. Next: Phase 6 only. |

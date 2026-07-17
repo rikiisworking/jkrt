@@ -1,9 +1,11 @@
-# RSS-only ingest from NHK main and NHK Easy
+# RSS-only ingest (multi-publisher defaults)
 
-v1 content comes **only from RSS** (title + feed description/content fields). One Scrape always targets **both** NHK main and NHK Easy sources. No HTML article fetch and no goquery in v1 — scrapers against full pages are fragile and expand ToS/ops surface.
+Content comes **only from RSS** (title + feed description/content fields). One Scrape always targets **every configured Source** (no per-feed picker). No HTML article fetch and no goquery — scrapers against full pages are fragile and expand ToS/ops surface.
 
-**Defaults:** Main feed URL pinned in `DEVELOPMENT_PLAN.md` (`news.web.nhk` cat0 RSS, verified 2026-07-17). Easy had **no verified public RSS** at that date; tests use fixtures; live Easy URL is config when available; soft-fail Easy without inventing HTML/JSON substitutes.
+**History:** v1 shipped as dual NHK (main + Easy). Later expansion added more public Japanese RSS defaults with the same hardcoded-URL pattern as NHK main (`yahoo_topics`, `itmedia_news`, `bbc_japanese` in `internal/scrape.DefaultSources`).
 
-**Considered:** single feed; HTML body fetch; multi-publisher; RSS-only dual NHK (chosen).
+**Defaults:** NHK main URL pinned (`news.web.nhk` cat0 RSS, verified 2026-07-17); Easy optional via env; other publishers use hardcoded public RSS URLs in code. Partial success per source is OK. Soft-fail empty Easy without inventing HTML/JSON substitutes.
 
-**Consequences:** Sentence text may be shorter than full articles; Easy may lag until a feed URL is confirmed; reopening HTML or non-RSS JSON is a new decision, not a silent expansion.
+**Considered:** single feed; HTML body fetch; dual NHK only; multi-publisher RSS (current).
+
+**Consequences:** Sentence text may be shorter than full articles; some feeds are title-heavy; feed outages are isolated; adding/removing a Source is a small code change in `DefaultSources` (or later env list if needed).

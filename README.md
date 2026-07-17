@@ -1,6 +1,6 @@
 # Japanese Kanji Reading Trainer (JKRT)
 
-Personal web app for **N2 → N1 reading**: pull **NHK main + NHK Easy RSS**, extract **words** (lemma + reading), and review them with **Anki-like SM-2** scheduling in real sentence context.
+Personal web app for **N2 → N1 reading**: pull **Japanese news RSS** (NHK, Yahoo topics, ITmedia, BBC Japanese, …), extract **words** (lemma + reading), and review them with **Anki-like SM-2** scheduling in real sentence context.
 
 > **Status:** Phase 6 complete — stats, export, performance (v1 phases 0–6 done).  
 > See [`DEVELOPMENT_PLAN.md`](DEVELOPMENT_PLAN.md) and [`CONTEXT.md`](CONTEXT.md).  
@@ -30,6 +30,9 @@ flowchart LR
   subgraph sources [RSS sources]
     M[NHK main]
     E[NHK Easy]
+    Y[Yahoo topics]
+    I[ITmedia]
+    B[BBC Japanese]
   end
 
   S[Scrape<br/>user /api/scrape]
@@ -42,9 +45,26 @@ flowchart LR
 
   M --> S
   E --> S
+  Y --> S
+  I --> S
+  B --> S
   S --> A --> K --> W --> Q --> R --> SM
   SM --> Q
 ```
+
+### Built-in RSS sources
+
+One **Scrape** always pulls **all** of these (partial success per feed is OK). URLs for Yahoo / ITmedia / BBC are hardcoded like NHK main; only NHK main/easy are env-overridable today.
+
+| `name` | Default URL | Notes |
+|--------|-------------|--------|
+| `nhk_main` | `https://news.web.nhk/n-data/conf/na/rss/cat0.xml` | Override: `JKRT_NHK_MAIN_RSS_URL` |
+| `nhk_easy` | *(empty)* | Set `JKRT_NHK_EASY_RSS_URL` when you have a live Easy RSS |
+| `yahoo_topics` | `https://news.yahoo.co.jp/rss/topics/top-picks.xml` | Major topics; often title-heavy |
+| `itmedia_news` | `https://rss.itmedia.co.jp/rss/2.0/news_bursts.xml` | Tech news (JA) |
+| `bbc_japanese` | `https://feeds.bbci.co.uk/japanese/rss.xml` | BBC News 日本語 |
+
+To add another feed later: append a `Source` in `internal/scrape.DefaultSources` (stable name + public RSS 2.0 URL). Still **no HTML article scrape**.
 
 ### Runtime stack
 
@@ -108,7 +128,7 @@ Full glossary: [`CONTEXT.md`](CONTEXT.md).
 
 | Term | Meaning in JKRT |
 |------|-----------------|
-| **Source** | Configured RSS feed (v1: NHK main + NHK Easy) |
+| **Source** | Configured RSS feed (built-in multi-publisher list) |
 | **Article** | One RSS item stored as text |
 | **Sentence** | Clause/unit of article text used as review context |
 | **Token** | Raw analyzer unit for a span of a Sentence |
@@ -172,7 +192,7 @@ jkrt/
 │   ├── http/            # Fiber routes, HTML/HTMX handlers
 │   ├── auth/            # bcrypt password, HMAC session cookie
 │   ├── config/          # JKRT_* env loading
-│   ├── scrape/          # dual NHK RSS fetch + parse
+│   ├── scrape/          # multi-source RSS fetch + parse
 │   ├── analyze/         # Kagome (IPA) → word candidates
 │   ├── schedule/        # pure SM-2 math (no I/O)
 │   ├── review/          # next/grade + stats (uses DB + schedule)
@@ -217,7 +237,7 @@ jkrt/
 
 - [x] Local Go server with password auth (HMAC session cookie)
 - [x] Morphological analysis → kanji-bearing **Words** + Card rows
-- [x] User-triggered scrape of **both** NHK feeds (RSS only — no HTML page scrape)
+- [x] User-triggered scrape of **all** built-in RSS feeds (NHK + others; no HTML page scrape)
 - [x] Review one Word at a time (Again / Hard / Good / Easy) with SM-2 scheduling
 - [x] Sentence context with unfamiliar words highlighted; furigana on toggle (default off)
 - [x] Dashboard / browse polish
@@ -328,7 +348,7 @@ make scrape
 # or: curl -sS -X POST http://127.0.0.1:8080/api/scrape
 ```
 
-NHK **main** needs a live network path. NHK **Easy** soft-fails until you set `JKRT_NHK_EASY_RSS_URL` (see [Config](#config)).
+Needs a live network path. NHK **Easy** soft-fails until you set `JKRT_NHK_EASY_RSS_URL`. Other built-in feeds use hardcoded public URLs (see [Built-in RSS sources](#built-in-rss-sources)).
 
 ### 6. Stop the server
 
@@ -455,7 +475,7 @@ Full detail: [`docs/auth-and-tunnel.md`](docs/auth-and-tunnel.md).
 | `GET` | `/review` | yes | Next due/new Card HTML |
 | `POST` | `/review` | yes | Grade Card → next |
 | `GET` | `/articles` | yes | Browse Articles / Sentences |
-| `POST` | `/api/scrape` | yes | Dual NHK RSS ingest (live network) |
+| `POST` | `/api/scrape` | yes | All configured RSS sources (live network) |
 | `GET` | `/api/stats` | yes | Queue + library JSON |
 | `GET` | `/api/export?format=json\|csv` | yes | Snapshot / Cards CSV download |
 

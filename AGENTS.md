@@ -34,7 +34,8 @@ If something is unspecified, **do not invent product behavior** — implement th
 - Add **goquery** or HTML article fetch in v1  
 - Implement **FSRS**, Anki sync, decks, or note types  
 - Grade the **whole Sentence** as one Review  
-- Scrape publishers other than configured NHK sources  
+- Scrape via HTML page fetch / goquery (RSS-only ingest only)  
+
 - Hit the network inside unit/integration tests  
 - Scaffold an **npm/Tailwind build** unless a later phase clearly needs it (CDN through Phase 4+)  
 - Skip schedule tests “until UI exists”  
@@ -47,7 +48,7 @@ If something is unspecified, **do not invent product behavior** — implement th
 - **Frontend**: HTMX + Tailwind (**CDN through Phase 3**). Templates/static via Fiber. No heavy SPA.  
 - **Database**: SQLite (`modernc.org/sqlite`). Schema: `DEVELOPMENT_PLAN.md`.  
 - **Deploy**: `go run ./cmd/server`. Cloudflare Tunnel only with auth on.  
-- **External**: RSS only — NHK main + NHK Easy (always both on Scrape). Analyzer: **Kagome** (IPA) pure-Go.  
+- **External**: RSS only — multi-publisher defaults (NHK main/Easy, Yahoo topics, ITmedia, BBC Japanese); always all on Scrape. Analyzer: **Kagome** (IPA) pure-Go.  
 - **Scheduler**: [`docs/sm2-spec.md`](docs/sm2-spec.md) only.  
 - **Security**: Password + **signed session cookie**; `JKRT_AUTH=off` for local only.
 
@@ -95,7 +96,7 @@ golangci-lint run   # when configured
 
 **Phase 6 (Stats, export, performance) — complete** (acceptance `go test ./...` green). `GET /api/stats`, `GET /api/export?format=json|csv`, dashboard library/phase numbers + export links, `migrations/002_perf.sql`, ingest `MaxRawTextRunes` truncate, export row caps. **v1 planned phases 0–6 are done.**
 
-**Next:** No further planned phase. Only implement work the user explicitly requests (e.g. multi-source RSS later).
+**Next:** No further planned phase. Only implement work the user explicitly requests.
 
 ## Safety
 

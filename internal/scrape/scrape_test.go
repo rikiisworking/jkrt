@@ -139,8 +139,9 @@ func TestScrapeBothFixturesIngest(t *testing.T) {
 	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
 	res := s.Run(context.Background(), now)
 
-	if len(res.Sources) != 2 {
-		t.Fatalf("sources: got %d want 2", len(res.Sources))
+	wantN := len(scrape.DefaultSources(mainURL, easyURL))
+	if len(res.Sources) != wantN {
+		t.Fatalf("sources: got %d want %d", len(res.Sources), wantN)
 	}
 	main, ok := sourceByName(res, scrape.SourceNHKMain)
 	if !ok {
@@ -164,6 +165,16 @@ func TestScrapeBothFixturesIngest(t *testing.T) {
 	}
 	if main.Error != "" || easy.Error != "" {
 		t.Fatalf("unexpected errors main=%q easy=%q", main.Error, easy.Error)
+	}
+	// Extra publishers have no fixture URLs → partial fail is OK (no network).
+	for _, name := range []string{scrape.SourceYahooTopics, scrape.SourceITmediaNews, scrape.SourceBBCJapanese} {
+		sr, ok := sourceByName(res, name)
+		if !ok {
+			t.Fatalf("missing %s in result", name)
+		}
+		if sr.OK {
+			t.Fatalf("%s should fail without fixture transport entry: %+v", name, sr)
+		}
 	}
 
 	var articles int
@@ -236,14 +247,18 @@ func TestScrapeBothFixturesIngest(t *testing.T) {
 		t.Fatalf("cards %d != words %d", cards, words)
 	}
 
-	// Second run: dedupe → items_new = 0, row counts unchanged.
+	// Second run: NHK fixtures dedupe → items_new = 0; extras still soft-fail without fixtures.
 	res2 := s.Run(context.Background(), now)
-	for _, sr := range res2.Sources {
+	for _, name := range []string{scrape.SourceNHKMain, scrape.SourceNHKEasy} {
+		sr, ok := sourceByName(res2, name)
+		if !ok {
+			t.Fatalf("second scrape missing %s", name)
+		}
 		if !sr.OK {
-			t.Fatalf("second scrape %s not ok: %+v", sr.Name, sr)
+			t.Fatalf("second scrape %s not ok: %+v", name, sr)
 		}
 		if sr.ItemsNew != 0 {
-			t.Fatalf("second scrape %s items_new: got %d want 0", sr.Name, sr.ItemsNew)
+			t.Fatalf("second scrape %s items_new: got %d want 0", name, sr.ItemsNew)
 		}
 	}
 	var articles2 int
@@ -265,8 +280,8 @@ func TestScrapeEasyMissingURLSoftFail(t *testing.T) {
 	s := scrape.New(d, a, sources, client)
 
 	res := s.Run(context.Background(), time.Now().UTC())
-	if len(res.Sources) != 2 {
-		t.Fatalf("sources: %d", len(res.Sources))
+	if len(res.Sources) != len(sources) {
+		t.Fatalf("sources: %d want %d", len(res.Sources), len(sources))
 	}
 	main, _ := sourceByName(res, scrape.SourceNHKMain)
 	easy, _ := sourceByName(res, scrape.SourceNHKEasy)
@@ -444,8 +459,8 @@ func TestScrapeSetsRequestHeaders(t *testing.T) {
 
 func TestDefaultSourcesUsesDefaultMainURL(t *testing.T) {
 	src := scrape.DefaultSources("", "https://easy.example/rss")
-	if len(src) != 2 {
-		t.Fatalf("len: %d", len(src))
+	if len(src) < 5 {
+		t.Fatalf("len: %d want at least NHK×2 + 3 extras", len(src))
 	}
 	if src[0].Name != scrape.SourceNHKMain || src[1].Name != scrape.SourceNHKEasy {
 		t.Fatalf("names: %+v", src)
@@ -456,6 +471,24 @@ func TestDefaultSourcesUsesDefaultMainURL(t *testing.T) {
 	if src[1].FeedURL != "https://easy.example/rss" {
 		t.Fatalf("easy url: %q", src[1].FeedURL)
 	}
+	byName := map[string]scrape.Source{}
+	for _, s := range src {
+		byName[s.Name] = s
+	}
+	for _, name := range []string{scrape.SourceYahooTopics, scrape.SourceITmediaNews, scrape.SourceBBCJapanese} {
+		if byName[name].FeedURL == "" {
+			t.Fatalf("%s missing default feed URL", name)
+		}
+	}
+	if byName[scrape.SourceYahooTopics].FeedURL != scrape.DefaultYahooTopicsRSSURL {
+		t.Fatalf("yahoo url: %q", byName[scrape.SourceYahooTopics].FeedURL)
+	}
+	if byName[scrape.SourceITmediaNews].FeedURL != scrape.DefaultITmediaNewsRSSURL {
+		t.Fatalf("itmedia url: %q", byName[scrape.SourceITmediaNews].FeedURL)
+	}
+	if byName[scrape.SourceBBCJapanese].FeedURL != scrape.DefaultBBCJapaneseRSSURL {
+		t.Fatalf("bbc url: %q", byName[scrape.SourceBBCJapanese].FeedURL)
+	}
 }
 
 func TestNewDefaults(t *testing.T) {
@@ -464,8 +497,9 @@ func TestNewDefaults(t *testing.T) {
 	if s.Client == nil {
 		t.Fatal("expected default client")
 	}
-	if len(s.Sources) != 2 {
-		t.Fatalf("default sources: %d", len(s.Sources))
+	want := len(scrape.DefaultSources(scrape.DefaultMainRSSURL, ""))
+	if len(s.Sources) != want {
+		t.Fatalf("default sources: %d want %d", len(s.Sources), want)
 	}
 	if s.Timeout != scrape.DefaultTimeout {
 		t.Fatalf("timeout: %v", s.Timeout)

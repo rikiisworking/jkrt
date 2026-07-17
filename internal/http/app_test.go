@@ -795,9 +795,14 @@ func loadRSSFixtures(t *testing.T) fixtureHTTPClient {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Empty-but-valid RSS so multi-publisher defaults succeed without live network.
+	empty := []byte(`<?xml version="1.0"?><rss version="2.0"><channel></channel></rss>`)
 	return fixtureHTTPClient{
 		"https://fixture.test/nhk_main.xml": main,
 		"https://fixture.test/nhk_easy.xml": easy,
+		scrape.DefaultYahooTopicsRSSURL:    empty,
+		scrape.DefaultITmediaNewsRSSURL:    empty,
+		scrape.DefaultBBCJapaneseRSSURL:    empty,
 	}
 }
 
@@ -835,8 +840,9 @@ func TestScrapeAuthOffIngestsFixtures(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(result.Sources) != 2 {
-		t.Fatalf("sources: %+v", result.Sources)
+	wantN := len(scrape.DefaultSources("https://fixture.test/nhk_main.xml", "https://fixture.test/nhk_easy.xml"))
+	if len(result.Sources) != wantN {
+		t.Fatalf("sources: got %d want %d %+v", len(result.Sources), wantN, result.Sources)
 	}
 	// Plan JSON shape: sources[{name, ok, items_new, error?}]
 	byName := map[string]scrape.SourceResult{}
@@ -903,8 +909,9 @@ func TestScrapeWithAuthCookie(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(result.Sources) != 2 {
-		t.Fatalf("sources: %+v", result.Sources)
+	wantN := len(scrape.DefaultSources("https://fixture.test/nhk_main.xml", "https://fixture.test/nhk_easy.xml"))
+	if len(result.Sources) != wantN {
+		t.Fatalf("sources: got %d want %d %+v", len(result.Sources), wantN, result.Sources)
 	}
 	for _, sr := range result.Sources {
 		if !sr.OK {
@@ -966,7 +973,7 @@ func TestScrapePartialSuccessJSON(t *testing.T) {
 	if err := json.Unmarshal(raw, &result); err != nil {
 		t.Fatalf("decode: %v body=%s", err, raw)
 	}
-	if len(result.Sources) != 2 {
+	if len(result.Sources) < 2 {
 		t.Fatalf("sources: %s", raw)
 	}
 	var main, easy scrape.SourceResult
@@ -987,7 +994,8 @@ func TestScrapePartialSuccessJSON(t *testing.T) {
 	if easy.Error == "" {
 		t.Fatal("easy needs error field")
 	}
-	// Ensure wire JSON includes "error" for failed source and not for ok source.
+	// Extra publishers have no fixture → not ok (partial success still HTTP 200).
+	// Ensure wire JSON includes "error" for failed source.
 	if !strings.Contains(string(raw), `"error"`) {
 		t.Fatalf("expected error key in JSON: %s", raw)
 	}
