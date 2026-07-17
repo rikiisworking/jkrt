@@ -33,10 +33,10 @@
 
 | Field | Value |
 |-------|--------|
-| **Current phase** | Phase 5 — Auth harden + tunnel docs |
-| **Repo state** | Phase 4 **complete**: dashboard (`GET /` due/new counts, UTC session progress, last scrape, HTMX Scrape), browse `GET /articles` + `GET /articles/:id`, shared nav/theme `#3B82F6`, empty states. Acceptance: `go test ./...` green + handler smoke tests. |
+| **Current phase** | Complete through Phase 6 (v1 milestone) |
+| **Repo state** | Phase 6 **complete**: `GET /api/stats`, `GET /api/export?format=json\|csv`, dashboard library/phase numbers + export links, `migrations/002_perf.sql` indexes, raw_text size limit, export fixture tests. Acceptance: `go test ./...` green. |
 | **Last updated** | 2026-07-17 |
-| **Agent-ready** | Yes — implement Phase 5 only unless asked otherwise |
+| **Agent-ready** | Yes — no further planned phase; only explicit user asks for new work |
 
 ---
 
@@ -303,15 +303,18 @@ jkrt/
 | `JKRT_NEW_PER_DAY` | `20` | |
 | `JKRT_SESSION_LIMIT` | `40` | |
 
-### Auth (Phase 0 normative)
+### Auth (Phase 0 + Phase 5)
 
 - Algorithm: **bcrypt** cost 10+  
 - Session: **HMAC-signed cookie** (no server session table in v1)  
 - Cookie name: `jkrt_session`  
 - Flags: `HttpOnly`, `SameSite=Lax`; `Secure` when request is HTTPS / `X-Forwarded-Proto=https`  
+- TTL: `JKRT_SESSION_TTL` (default `168h`); cookie `Expires` + `MaxAge`; server rejects expired payload  
 - Bootstrap: on startup, if no user row and `JKRT_PASSWORD` set, create user 1 with hash  
+- Password **rotate**: `auth.SetPassword` / `go run ./cmd/setpassword` (does not wipe Cards); optional new `JKRT_SESSION_SECRET` to invalidate sessions  
 - If auth on and no password/user: **refuse to start** with clear error  
-- `JKRT_AUTH=off`: skip middleware (local only)
+- `JKRT_AUTH=off`: skip middleware (**local only** — never with Cloudflare Tunnel)  
+- Ops guide: [`docs/auth-and-tunnel.md`](docs/auth-and-tunnel.md)
 
 ### .gitignore (Phase 0 must include)
 
@@ -331,7 +334,7 @@ coverage.out
 
 ---
 
-## HTTP surface (Phase 0–4)
+## HTTP surface (Phase 0–6)
 
 All times JSON errors: `{"error":"..."}` unless noted.  
 When `JKRT_AUTH=on`, unauthenticated requests to protected routes → **401** (API) or **302** to `/login` (HTML).
@@ -339,11 +342,13 @@ When `JKRT_AUTH=on`, unauthenticated requests to protected routes → **401** (A
 | Method | Path | Auth | Phase | Request | Success |
 |--------|------|------|-------|---------|---------|
 | GET | `/health` | no | 0 | — | `200` `{"status":"ok"}` |
-| GET | `/` | yes* | 0/4 | — | `200` HTML **dashboard** (due/new counts, session progress, last scrape, links; empty library hint) |
+| GET | `/` | yes* | 0/4/6 | — | `200` HTML **dashboard** (due/new, session progress, library/phase numbers, last scrape, export links; empty library hint) |
 | GET | `/login` | no | 0 | — | `200` HTML form |
 | POST | `/login` | no | 0 | form `password` | `302` `/` + Set-Cookie; bad → `401` HTML/form error |
 | POST | `/logout` | yes | 0 | — | `302` `/login` clear cookie |
 | POST | `/api/scrape` | yes | 2/4 | empty body | `200` JSON `{ "sources": [ { "name", "ok", "items_new", "error?" } ] }`; **HTMX** → `200` HTML summary fragment |
+| GET | `/api/stats` | yes | 6 | — | `200` JSON `{ "queue": review.Stats, "library": LibraryCounts, "as_of" }` |
+| GET | `/api/export` | yes | 6 | `?format=json\|csv` (default json) | `200` attachment JSON snapshot or CSV of Cards; bad format → `400` |
 | GET | `/review` | yes | 3 | — | `200` HTML from **next** payload (focus Word + Sentence spans) or empty state |
 | POST | `/review` | yes | 3 | form `card_id`, `grade`, `sentence_id`, **`card_updated_at`** | `302` `/review` (re-**next**) or `200` HTMX **partial** (`#review-main`); stale double-submit re-nexts; bad input → 4xx |
 | GET | `/articles` | yes | 4 | — | `200` HTML article list (newest first) or empty state |
@@ -498,23 +503,38 @@ go test ./... -count=1
 
 ---
 
-### Phase 5: Auth harden + tunnel docs
+### Phase 5: Auth harden + tunnel docs — **done**
 
-- [ ] Secure cookie / TTL documented
-- [ ] Password rotate procedure
-- [ ] Tunnel README section: never auth off
+- [x] Secure cookie / TTL documented (`docs/auth-and-tunnel.md`, README, `.env.example`; login sets `MaxAge` + `Expires` from `JKRT_SESSION_TTL`)
+- [x] Password rotate procedure (`auth.SetPassword` / `Store.UpdatePasswordHash`, `go run ./cmd/setpassword`)
+- [x] Tunnel README section: never auth off (`README.md` + `docs/auth-and-tunnel.md`)
 
 **Acceptance:** auth tests for expiry/unauthorized; docs present.
 
+```bash
+go test ./internal/auth/... ./internal/http/... -count=1
+go test ./... -count=1
+# docs: docs/auth-and-tunnel.md + README tunnel section
+```
+
+**Deliverable:** safe phone access via tunnel only with auth on; password rotate without wiping Cards.
+
 ---
 
-### Phase 6: Stats, export, performance
+### Phase 6: Stats, export, performance — **done**
 
-- [ ] Stats endpoints or dashboard numbers
-- [ ] Export JSON/CSV
-- [ ] Indexes, size limits
+- [x] Stats endpoints or dashboard numbers (`GET /api/stats`; dashboard library/phase + mature counts)
+- [x] Export JSON/CSV (`GET /api/export?format=json|csv` via `internal/export`)
+- [x] Indexes, size limits (`migrations/002_perf.sql`; `MaxRawTextRunes` truncate on ingest; export row caps)
 
 **Acceptance:** export fixture test; `go test ./...` green.
+
+```bash
+go test ./internal/export/... ./internal/db/... ./internal/http/... -count=1
+go test ./... -count=1
+```
+
+**Deliverable:** backup export + library stats API; safer indexes and body caps.
 
 ---
 
@@ -558,6 +578,8 @@ go test ./... -count=1
 
 | Date | Note |
 |------|------|
+| 2026-07-17 | Phase 6 **complete**: `/api/stats`, `/api/export` JSON/CSV, dashboard library/export links, `002_perf.sql` indexes, raw_text truncate + export caps; export fixture tests. v1 phase plan complete. |
+| 2026-07-17 | Phase 5 **complete**: cookie/TTL docs, password rotate (`cmd/setpassword`), tunnel guide (never auth off), expired-session HTTP 302/401 tests, login `MaxAge`. Next: Phase 6 only. |
 | 2026-07-17 | Phase 4 **complete**: live dashboard (`GET /`) with due/new, UTC session progress bars, last scrape, HTMX Scrape button; `GET /articles` + `GET /articles/:id` browse; shared nav/theme; empty states; `review.Stats` + `db` browse reads; handler smoke tests. Next: Phase 5 only. |
 | 2026-07-17 | Phase 3 **closed**: checklist + acceptance re-verified (`go test ./...`); README/AGENTS/plan status aligned; next work is Phase 4 only. |
 | 2026-07-17 | Phase 3 hardening: optimistic grade lock (`card_updated_at`), skip unpresentable Cards, HTMX `#review-main` partial + furigana sessionStorage, shared `schedule.Params` on DB extract, docs clarify UTC-day SessionLimit + NewPerDay on first grade. |

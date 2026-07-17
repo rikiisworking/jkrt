@@ -1,6 +1,7 @@
 package http
 
 import (
+	"bytes"
 	"errors"
 	"path/filepath"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/rikiisworking/jkrt/internal/auth"
 	"github.com/rikiisworking/jkrt/internal/db"
+	"github.com/rikiisworking/jkrt/internal/export"
 	"github.com/rikiisworking/jkrt/internal/review"
 )
 
@@ -152,11 +154,12 @@ func (a *App) handleIndex(c *fiber.Ctx) error {
 		}
 		data.Stats = st
 	}
-	n, err := a.DB.CountArticles()
+	lib, err := a.DB.LibraryCounts(db.LearnerUserID)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 	}
-	data.ArticleCount = n
+	data.Library = lib
+	data.ArticleCount = lib.Articles
 	if fetched, ok, err := a.DB.LastArticleFetchedAt(); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 	} else if ok {
@@ -164,6 +167,79 @@ func (a *App) handleIndex(c *fiber.Ctx) error {
 		data.HasLastFetch = true
 	}
 	return c.SendString(dashboardHTML(data))
+}
+
+// handleStats serves GET /api/stats (Phase 6 JSON queue + library numbers).
+func (a *App) handleStats(c *fiber.Ctx) error {
+	if a.DB == nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "database not configured"})
+	}
+	now := time.Now().UTC()
+	var queue review.Stats
+	if a.Review != nil {
+		st, err := a.Review.Stats(db.LearnerUserID, now)
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		}
+		queue = st
+	}
+	lib, err := a.DB.LibraryCounts(db.LearnerUserID)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(fiber.Map{
+		"queue":   queue,
+		"library": lib,
+		"as_of":   now.Format(time.RFC3339),
+	})
+}
+
+// handleExport serves GET /api/export?format=json|csv (Phase 6).
+func (a *App) handleExport(c *fiber.Ctx) error {
+	if a.DB == nil || a.Export == nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "export not configured"})
+	}
+	format, err := export.ParseFormat(c.Query("format", "json"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	now := time.Now().UTC()
+	var queue review.Stats
+	if a.Review != nil {
+		st, err := a.Review.Stats(db.LearnerUserID, now)
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		}
+		queue = st
+	}
+	lib, err := a.DB.LibraryCounts(db.LearnerUserID)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+	snap, err := a.Export.BuildSnapshot(db.LearnerUserID, queue, lib, now)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+
+	switch format {
+	case export.FormatCSV:
+		var buf bytes.Buffer
+		if err := export.WriteCardsCSV(&buf, snap.Cards); err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		}
+		c.Set("Content-Type", "text/csv; charset=utf-8")
+		c.Set("Content-Disposition", `attachment; filename="jkrt-cards.csv"`)
+		return c.Send(buf.Bytes())
+	default:
+		var buf bytes.Buffer
+		if err := export.WriteJSON(&buf, snap); err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		}
+		c.Set("Content-Type", "application/json; charset=utf-8")
+		c.Set("Content-Disposition", `attachment; filename="jkrt-export.json"`)
+		return c.Send(buf.Bytes())
+	}
 }
 
 // handleArticlesList serves GET /articles (browse).
@@ -231,11 +307,19 @@ func (a *App) handleLoginPost(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusInternalServerError, "could not create session")
 	}
 
+	// HttpOnly + SameSite=Lax always. Secure when the request is HTTPS (or
+	// X-Forwarded-Proto=https behind Cloudflare Tunnel). Expires/MaxAge follow
+	// JKRT_SESSION_TTL (default 168h). See docs/auth-and-tunnel.md.
+	maxAge := int(a.Sessions.TTL().Seconds())
+	if maxAge < 0 {
+		maxAge = 0
+	}
 	c.Cookie(&fiber.Cookie{
 		Name:     auth.CookieName,
 		Value:    val,
 		Path:     "/",
 		Expires:  exp,
+		MaxAge:   maxAge,
 		HTTPOnly: true,
 		SameSite: "Lax",
 		Secure:   isHTTPS(c),

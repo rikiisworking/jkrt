@@ -650,6 +650,131 @@ func TestNextSkipsCardWithoutSentence(t *testing.T) {
 	}
 }
 
+// Spec: NewPerDay advances on first grade, not presentation alone.
+// Same new Card stays sticky until graded so re-open does not burn quota.
+func TestNextStickyNewUntilGraded(t *testing.T) {
+	d := openTestDB(t)
+	seedUser(t, d)
+	a := mustAnalyzer(t)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	if _, err := d.IngestText(db.LearnerUserID, "経済政策を発表した。", a, now); err != nil {
+		t.Fatal(err)
+	}
+
+	p := schedule.DefaultParams()
+	p.NewPerDay = 1
+	svc := review.New(d, p)
+
+	res1, err := svc.Next(db.LearnerUserID, now)
+	if err != nil || res1.Empty {
+		t.Fatal("need first new card")
+	}
+	res2, err := svc.Next(db.LearnerUserID, now)
+	if err != nil || res2.Empty {
+		t.Fatal("need sticky re-present")
+	}
+	if res2.Item.CardID != res1.Item.CardID {
+		t.Fatalf("sticky: got card %d want %d", res2.Item.CardID, res1.Item.CardID)
+	}
+	var n int
+	if err := d.SQL().QueryRow(`SELECT COUNT(1) FROM reviews`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("presentation alone must not insert reviews; got %d", n)
+	}
+
+	if err := svc.Grade(db.LearnerUserID, res1.Item.CardID, res1.Item.SentenceID, "good", res1.Item.UpdatedAt, now); err != nil {
+		t.Fatal(err)
+	}
+	// Cap exhausted and learning card not yet due → empty
+	res3, err := svc.Next(db.LearnerUserID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res3.Empty {
+		t.Fatalf("after grade under NewPerDay=1 want empty, got card %d", res3.Item.CardID)
+	}
+}
+
+func TestGradeMissingUpdatedAtIsStale(t *testing.T) {
+	d := openTestDB(t)
+	seedUser(t, d)
+	a := mustAnalyzer(t)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	if _, err := d.IngestText(db.LearnerUserID, "経済政策を発表した。", a, now); err != nil {
+		t.Fatal(err)
+	}
+	svc := review.New(d, schedule.DefaultParams())
+	res, err := svc.Next(db.LearnerUserID, now)
+	if err != nil || res.Empty {
+		t.Fatal("need card")
+	}
+	err = svc.Grade(db.LearnerUserID, res.Item.CardID, res.Item.SentenceID, "good", "", now)
+	if !errors.Is(err, review.ErrStaleCard) {
+		t.Fatalf("empty updated_at: got %v want ErrStaleCard", err)
+	}
+	err = svc.Grade(db.LearnerUserID, res.Item.CardID, res.Item.SentenceID, "good", "   ", now)
+	if !errors.Is(err, review.ErrStaleCard) {
+		t.Fatalf("blank updated_at: got %v want ErrStaleCard", err)
+	}
+}
+
+func TestGradeNilService(t *testing.T) {
+	var svc *review.Service
+	err := svc.Grade(1, 1, 1, "good", "tok", time.Now().UTC())
+	if !errors.Is(err, review.ErrNilService) {
+		t.Fatalf("got %v want ErrNilService", err)
+	}
+	svc = review.New(nil, schedule.DefaultParams())
+	err = svc.Grade(1, 1, 1, "good", "tok", time.Now().UTC())
+	if !errors.Is(err, review.ErrNilService) {
+		t.Fatalf("nil db: got %v want ErrNilService", err)
+	}
+}
+
+func TestServiceParamsAndFocusReading(t *testing.T) {
+	p := schedule.DefaultParams()
+	p.NewPerDay = 7
+	svc := review.New(nil, p)
+	got := svc.Params()
+	if got.NewPerDay != 7 {
+		t.Fatalf("Params NewPerDay: %d", got.NewPerDay)
+	}
+	item := review.Item{Reading: "  けいざい  "}
+	if item.FocusReading() != "けいざい" {
+		t.Fatalf("FocusReading: %q", item.FocusReading())
+	}
+}
+
+// Grade tolerates SQLite-style due_at timestamps (space separator, no TZ).
+func TestGradeAcceptsSQLiteStyleDueAt(t *testing.T) {
+	d := openTestDB(t)
+	seedUser(t, d)
+	a := mustAnalyzer(t)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	if _, err := d.IngestText(db.LearnerUserID, "経済政策を発表した。", a, now); err != nil {
+		t.Fatal(err)
+	}
+	svc := review.New(d, schedule.DefaultParams())
+	res, err := svc.Next(db.LearnerUserID, now)
+	if err != nil || res.Empty {
+		t.Fatal("need card")
+	}
+	// Some SQLite tooling stores datetime as "YYYY-MM-DD HH:MM:SS".
+	_, err = d.SQL().Exec(
+		`UPDATE cards SET due_at = '2026-07-17 12:00:00' WHERE id = ?`,
+		res.Item.CardID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Re-read updated_at token (unchanged by due_at update).
+	if err := svc.Grade(db.LearnerUserID, res.Item.CardID, res.Item.SentenceID, "good", res.Item.UpdatedAt, now); err != nil {
+		t.Fatalf("grade with sqlite-style due_at: %v", err)
+	}
+}
+
 func almostEqual(a, b float64) bool {
 	const eps = 1e-9
 	if a > b {

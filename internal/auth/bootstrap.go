@@ -38,6 +38,21 @@ func Bootstrap(store *Store, authEnabled bool, password string) error {
 	return nil
 }
 
+// SetPassword bcrypt-hashes password and updates user id=1.
+// Use for password rotation without wiping learning data.
+// Existing signed cookies stay valid until they expire or the Learner logs out;
+// change JKRT_SESSION_SECRET and restart to invalidate all sessions.
+func SetPassword(store *Store, password string) error {
+	if store == nil {
+		return fmt.Errorf("auth store is required")
+	}
+	hash, err := HashPassword(password)
+	if err != nil {
+		return err
+	}
+	return store.UpdatePasswordHash(hash)
+}
+
 // EnsureLearnerRow ensures users.id=1 exists for FK targets (cards, reviews).
 // Used when JKRT_AUTH=off so extract/scrape can create Cards without a login bootstrap.
 // The password hash is random and unknown (not for login).

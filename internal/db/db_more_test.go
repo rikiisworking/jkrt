@@ -8,6 +8,7 @@ import (
 
 	"github.com/rikiisworking/jkrt/internal/analyze"
 	"github.com/rikiisworking/jkrt/internal/db"
+	"github.com/rikiisworking/jkrt/internal/schedule"
 )
 
 func TestSchemaAllTablesPresent(t *testing.T) {
@@ -424,13 +425,15 @@ func TestRePersistSameSentenceReplacesOccurrences(t *testing.T) {
 func TestSchemaMigrationsRecorded(t *testing.T) {
 	d := openTestDB(t)
 	var n int
-	if err := d.SQL().QueryRow(
-		`SELECT COUNT(1) FROM schema_migrations WHERE name = '001_init.sql'`,
-	).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	if n != 1 {
-		t.Fatalf("expected 001_init.sql recorded, got %d", n)
+	for _, name := range []string{"001_init.sql", "002_perf.sql"} {
+		if err := d.SQL().QueryRow(
+			`SELECT COUNT(1) FROM schema_migrations WHERE name = ?`, name,
+		).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 1 {
+			t.Fatalf("expected %s recorded, got %d", name, n)
+		}
 	}
 	// Second open must not re-apply / must stay at 1 row for that name.
 	path := filepath.Join(t.TempDir(), "mig.db")
@@ -452,6 +455,14 @@ func TestSchemaMigrationsRecorded(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("duplicate migration records: %d", n)
+	}
+	if err := d2.SQL().QueryRow(
+		`SELECT COUNT(1) FROM schema_migrations WHERE name = '002_perf.sql'`,
+	).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("duplicate 002 migration records: %d", n)
 	}
 }
 
@@ -773,6 +784,31 @@ func TestFindMigrationsDirFromPackageCwd(t *testing.T) {
 	t.Cleanup(func() { _ = d.Close() })
 	if d.SQL() == nil {
 		t.Fatal("nil sql")
+	}
+}
+
+// SetScheduleParams seeds new Cards via schedule.NewCard (not hard-coded ease).
+func TestSetScheduleParamsUsedOnExtract(t *testing.T) {
+	d := openTestDB(t)
+	seedUser(t, d)
+	a, err := analyze.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := schedule.DefaultParams()
+	p.StartingEase = 2.1
+	d.SetScheduleParams(p)
+
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	if _, err := d.IngestText(db.LearnerUserID, "経済政策を発表した。", a, now); err != nil {
+		t.Fatal(err)
+	}
+	var ease float64
+	if err := d.SQL().QueryRow(`SELECT ease FROM cards WHERE user_id = 1 LIMIT 1`).Scan(&ease); err != nil {
+		t.Fatal(err)
+	}
+	if ease != 2.1 {
+		t.Fatalf("ease: got %v want 2.1 from SetScheduleParams", ease)
 	}
 }
 

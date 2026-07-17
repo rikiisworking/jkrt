@@ -259,6 +259,99 @@ func TestWrongUserSessionRejected(t *testing.T) {
 	}
 }
 
+// Expired session cookie is treated as unauthenticated (Phase 5).
+func TestExpiredSessionRedirectsHTML(t *testing.T) {
+	app := newTestApp(t, true)
+	cookie := signedSessionCookie(t, time.Now().UTC().Add(-time.Hour))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: cookie})
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatalf("Test: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("status: got %d want 302", resp.StatusCode)
+	}
+	if resp.Header.Get("Location") != "/login" {
+		t.Fatalf("Location: %q", resp.Header.Get("Location"))
+	}
+}
+
+func TestExpiredSessionUnauthorizedAPI(t *testing.T) {
+	app := newTestApp(t, true)
+	cookie := signedSessionCookie(t, time.Now().UTC().Add(-time.Minute))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/scrape", nil)
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: cookie})
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatalf("Test: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status: got %d want 401", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "unauthorized") {
+		t.Fatalf("body: %s", body)
+	}
+}
+
+func TestExpiredSessionUnauthorizedJSONAccept(t *testing.T) {
+	app := newTestApp(t, true)
+	cookie := signedSessionCookie(t, time.Now().UTC().Add(-time.Second))
+
+	req := httptest.NewRequest(http.MethodGet, "/review", nil)
+	req.Header.Set("Accept", "application/json")
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: cookie})
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatalf("Test: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status: got %d want 401", resp.StatusCode)
+	}
+}
+
+// signedSessionCookie builds a valid HMAC cookie that expires at exp (may be past).
+func signedSessionCookie(t *testing.T, exp time.Time) string {
+	t.Helper()
+	secret := []byte("0123456789abcdef0123456789abcdef")
+	payload := fmt.Sprintf("%d|%d", auth.UserID, exp.Unix())
+	mac := hmac.New(sha256.New, secret)
+	_, _ = mac.Write([]byte(payload))
+	raw := payload + "|" + hex.EncodeToString(mac.Sum(nil))
+	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+}
+
+func TestLoginCookieMaxAgeMatchesTTL(t *testing.T) {
+	app := newTestApp(t, true)
+	form := strings.NewReader("password=test-password-change-me")
+	req := httptest.NewRequest(http.MethodPost, "/login", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	wantMax := int(time.Hour.Seconds()) // newTestApp SessionTTL
+	for _, c := range resp.Cookies() {
+		if c.Name == auth.CookieName {
+			if c.MaxAge != wantMax {
+				t.Fatalf("MaxAge: got %d want %d", c.MaxAge, wantMax)
+			}
+			if !c.HttpOnly {
+				t.Fatal("cookie should be HttpOnly")
+			}
+			return
+		}
+	}
+	t.Fatal("session cookie missing")
+}
+
 func TestLoginGetForm(t *testing.T) {
 	app := newTestApp(t, true)
 	req := httptest.NewRequest(http.MethodGet, "/login", nil)
@@ -414,6 +507,86 @@ func TestAuthOnBadPassword(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(body), "Invalid password") {
 		t.Fatalf("expected error in form HTML, body=%s", body)
+	}
+}
+
+// After password rotate, old password fails login; new password works (Phase 5).
+func TestLoginAfterPasswordRotate(t *testing.T) {
+	app := newTestApp(t, true)
+	if err := auth.SetPassword(app.Store, "rotated-pass"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Old bootstrap password rejected
+	form := strings.NewReader("password=test-password-change-me")
+	req := httptest.NewRequest(http.MethodPost, "/login", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("old password status: got %d want 401", resp.StatusCode)
+	}
+
+	// New password accepted
+	form2 := strings.NewReader("password=rotated-pass")
+	req2 := httptest.NewRequest(http.MethodPost, "/login", form2)
+	req2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp2, err := app.Fiber.Test(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusFound {
+		t.Fatalf("new password status: got %d want 302", resp2.StatusCode)
+	}
+	var session string
+	for _, c := range resp2.Cookies() {
+		if c.Name == auth.CookieName {
+			session = c.Value
+		}
+	}
+	if session == "" {
+		t.Fatal("expected session cookie after rotate login")
+	}
+	req3 := httptest.NewRequest(http.MethodGet, "/", nil)
+	req3.AddCookie(&http.Cookie{Name: auth.CookieName, Value: session})
+	resp3, err := app.Fiber.Test(req3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp3.Body.Close()
+	if resp3.StatusCode != http.StatusOK {
+		t.Fatalf("authed index: %d", resp3.StatusCode)
+	}
+}
+
+// Wrong HMAC secret is unauthenticated even if payload shape is valid.
+func TestWrongSessionSecretRejected(t *testing.T) {
+	app := newTestApp(t, true)
+	// Sign with a different secret than the app's SessionSecret.
+	wrongSecret := []byte("ffffffffffffffffffffffffffffffff")
+	exp := time.Now().UTC().Add(time.Hour).Unix()
+	payload := fmt.Sprintf("%d|%d", auth.UserID, exp)
+	mac := hmac.New(sha256.New, wrongSecret)
+	_, _ = mac.Write([]byte(payload))
+	raw := payload + "|" + hex.EncodeToString(mac.Sum(nil))
+	cookie := base64.RawURLEncoding.EncodeToString([]byte(raw))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: cookie})
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("status: got %d want 302", resp.StatusCode)
+	}
+	if resp.Header.Get("Location") != "/login" {
+		t.Fatalf("Location: %q", resp.Header.Get("Location"))
 	}
 }
 
@@ -900,6 +1073,88 @@ func TestReviewBadGrade(t *testing.T) {
 	}
 }
 
+// HTMX validation errors re-show next card (or empty) with an alert banner.
+func TestReviewBadGradeHTMXReturnsPartial(t *testing.T) {
+	app := newTestApp(t, false)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	if _, err := app.DB.IngestText(db.LearnerUserID, "経済政策を発表した。", app.Analyzer, now); err != nil {
+		t.Fatal(err)
+	}
+	res, err := app.Review.Next(db.LearnerUserID, now)
+	if err != nil || res.Empty {
+		t.Fatal("need a card")
+	}
+	form := strings.NewReader(fmt.Sprintf(
+		"card_id=%d&sentence_id=%d&card_updated_at=%s&grade=maybe",
+		res.Item.CardID, res.Item.SentenceID, res.Item.UpdatedAt,
+	))
+	req := httptest.NewRequest(http.MethodPost, "/review", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status: got %d want 400", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	if strings.Contains(s, "<!DOCTYPE") {
+		t.Fatal("HTMX error should return partial, not full document")
+	}
+	if !strings.Contains(s, `role="alert"`) {
+		t.Fatalf("expected error banner, body=%s", s)
+	}
+	// Card still new (grade rejected); queue should still show a card form.
+	if !strings.Contains(s, `name="card_id"`) && !strings.Contains(s, "Queue empty") {
+		t.Fatalf("expected review partial content, body=%s", s)
+	}
+	var n int
+	if err := app.DB.SQL().QueryRow(`SELECT COUNT(1) FROM reviews`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("bad grade must not insert reviews: %d", n)
+	}
+}
+
+func TestReviewSentenceNotLinked(t *testing.T) {
+	app := newTestApp(t, false)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	if _, err := app.DB.IngestText(db.LearnerUserID, "経済政策を発表した。", app.Analyzer, now); err != nil {
+		t.Fatal(err)
+	}
+	res, err := app.Review.Next(db.LearnerUserID, now)
+	if err != nil || res.Empty {
+		t.Fatal("need card")
+	}
+	var articleID int64
+	if err := app.DB.SQL().QueryRow(`SELECT id FROM articles LIMIT 1`).Scan(&articleID); err != nil {
+		t.Fatal(err)
+	}
+	r, err := app.DB.SQL().Exec(`INSERT INTO sentences (article_id, text, order_index) VALUES (?, '別。', 99)`, articleID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	badSID, _ := r.LastInsertId()
+	form := strings.NewReader(fmt.Sprintf(
+		"card_id=%d&sentence_id=%d&card_updated_at=%s&grade=good",
+		res.Item.CardID, badSID, res.Item.UpdatedAt,
+	))
+	req := httptest.NewRequest(http.MethodPost, "/review", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status: got %d want 400", resp.StatusCode)
+	}
+}
+
 func TestReviewMissingFields(t *testing.T) {
 	app := newTestApp(t, false)
 	form := strings.NewReader("grade=good")
@@ -1199,6 +1454,22 @@ func TestArticleNotFound(t *testing.T) {
 	}
 }
 
+func TestArticleInvalidID(t *testing.T) {
+	app := newTestApp(t, false)
+	for _, path := range []string{"/articles/0", "/articles/-1", "/articles/abc"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		resp, err := app.Fiber.Test(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("%s: status got %d want 400 body=%s", path, resp.StatusCode, body)
+		}
+	}
+}
+
 func TestArticlesAuthRequired(t *testing.T) {
 	app := newTestApp(t, true)
 	req := httptest.NewRequest(http.MethodGet, "/articles", nil)
@@ -1235,5 +1506,252 @@ func TestScrapeHTMXReturnsHTML(t *testing.T) {
 	}
 	if strings.HasPrefix(strings.TrimSpace(s), "{") {
 		t.Fatal("HTMX scrape must not return raw JSON")
+	}
+}
+
+// --- Phase 6: stats + export ---
+
+func TestStatsAPI(t *testing.T) {
+	app := newTestApp(t, false)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	if _, err := app.DB.IngestText(db.LearnerUserID, "経済政策を発表した。", app.Analyzer, now); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	var payload struct {
+		Queue struct {
+			DueCount int `json:"DueCount"`
+			NewCount int `json:"NewCount"`
+		} `json:"queue"`
+		Library struct {
+			Articles int            `json:"Articles"`
+			Words    int            `json:"Words"`
+			Cards    int            `json:"Cards"`
+			ByPhase  map[string]int `json:"ByPhase"`
+		} `json:"library"`
+		AsOf string `json:"as_of"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("json: %v body=%s", err, body)
+	}
+	if payload.AsOf == "" {
+		t.Fatal("missing as_of")
+	}
+	if payload.Library.Articles != 1 {
+		t.Fatalf("articles: %d", payload.Library.Articles)
+	}
+	if payload.Library.Words < 1 || payload.Library.Cards < 1 {
+		t.Fatalf("words/cards: %+v", payload.Library)
+	}
+	if payload.Library.ByPhase["new"] < 1 {
+		t.Fatalf("by_phase new: %+v", payload.Library.ByPhase)
+	}
+	if payload.Queue.NewCount < 1 {
+		t.Fatalf("queue new: %+v", payload.Queue)
+	}
+}
+
+func TestStatsAPIRequiresAuth(t *testing.T) {
+	app := newTestApp(t, true)
+	req := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status: got %d want 401", resp.StatusCode)
+	}
+}
+
+func TestExportJSONAPI(t *testing.T) {
+	app := newTestApp(t, false)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	if _, err := app.DB.IngestText(db.LearnerUserID, "経済政策を発表した。", app.Analyzer, now); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/export?format=json", nil)
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: %d", resp.StatusCode)
+	}
+	ct := resp.Header.Get("Content-Type")
+	if !strings.Contains(ct, "application/json") {
+		t.Fatalf("Content-Type: %s", ct)
+	}
+	if !strings.Contains(resp.Header.Get("Content-Disposition"), "jkrt-export.json") {
+		t.Fatalf("Content-Disposition: %s", resp.Header.Get("Content-Disposition"))
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "経済") {
+		t.Fatalf("export missing lemma, body=%s", body)
+	}
+	if !strings.Contains(string(body), `"cards"`) {
+		t.Fatal("export missing cards")
+	}
+}
+
+// Default format (no query) is JSON.
+func TestExportDefaultFormatIsJSON(t *testing.T) {
+	app := newTestApp(t, false)
+	req := httptest.NewRequest(http.MethodGet, "/api/export", nil)
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: %d", resp.StatusCode)
+	}
+	if !strings.Contains(resp.Header.Get("Content-Type"), "application/json") {
+		t.Fatalf("Content-Type: %s", resp.Header.Get("Content-Type"))
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), `"user_id"`) {
+		t.Fatalf("body: %s", body)
+	}
+}
+
+func TestExportCSVAPI(t *testing.T) {
+	app := newTestApp(t, false)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	if _, err := app.DB.IngestText(db.LearnerUserID, "経済政策を発表した。", app.Analyzer, now); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/export?format=csv", nil)
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: %d", resp.StatusCode)
+	}
+	if !strings.Contains(resp.Header.Get("Content-Type"), "text/csv") {
+		t.Fatalf("Content-Type: %s", resp.Header.Get("Content-Type"))
+	}
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	if !strings.Contains(s, "lemma,reading") {
+		t.Fatalf("csv header: %s", s)
+	}
+	if !strings.Contains(s, "経済") {
+		t.Fatalf("csv body: %s", s)
+	}
+}
+
+func TestExportBadFormat(t *testing.T) {
+	app := newTestApp(t, false)
+	req := httptest.NewRequest(http.MethodGet, "/api/export?format=xml", nil)
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status: got %d want 400", resp.StatusCode)
+	}
+}
+
+func TestExportRequiresAuth(t *testing.T) {
+	app := newTestApp(t, true)
+	req := httptest.NewRequest(http.MethodGet, "/api/export", nil)
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status: got %d want 401", resp.StatusCode)
+	}
+}
+
+func TestDashboardShowsExportLinks(t *testing.T) {
+	app := newTestApp(t, false)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	for _, want := range []string{
+		`/api/export?format=json`,
+		`/api/export?format=csv`,
+		`/api/stats`,
+		"Export",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("dashboard missing %q", want)
+		}
+	}
+}
+
+func TestDashboardLibraryNumbersAfterIngest(t *testing.T) {
+	app := newTestApp(t, false)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	if _, err := app.DB.IngestText(db.LearnerUserID, "経済政策を発表した。", app.Analyzer, now); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	// dashboardHTML: "Cards: N · words: N · reviews: N · mature: N"
+	if !strings.Contains(s, "Cards:") || !strings.Contains(s, "words:") {
+		t.Fatalf("expected library card/word summary")
+	}
+	// by-phase line always rendered
+	if !strings.Contains(s, "relearning") {
+		t.Fatalf("expected phase breakdown on dashboard")
+	}
+	if strings.Contains(s, "No articles yet") {
+		t.Fatal("should not show empty hint after ingest")
+	}
+}
+
+func TestExportCSVContentDisposition(t *testing.T) {
+	app := newTestApp(t, false)
+	req := httptest.NewRequest(http.MethodGet, "/api/export?format=csv", nil)
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if !strings.Contains(resp.Header.Get("Content-Disposition"), "jkrt-cards.csv") {
+		t.Fatalf("Content-Disposition: %s", resp.Header.Get("Content-Disposition"))
+	}
+}
+
+func TestExportWithAuthCookie(t *testing.T) {
+	app := newTestApp(t, true)
+	cookie := loginCookie(t, app)
+	req := httptest.NewRequest(http.MethodGet, "/api/export?format=json", nil)
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: cookie})
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: %d", resp.StatusCode)
 	}
 }

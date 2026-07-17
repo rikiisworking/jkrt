@@ -503,3 +503,95 @@ func TestNewCardNormalizesToUTC(t *testing.T) {
 		t.Fatalf("DueAt: got %v want %v", s.DueAt, now.UTC())
 	}
 }
+
+// Degenerate LearningSteps and out-of-range step indices stay safe (no panic).
+func TestLearningEmptyStepsAndStepClamp(t *testing.T) {
+	T0 := t0()
+	p := params()
+	p.LearningSteps = nil
+
+	s := schedule.State{Phase: schedule.PhaseLearning, LearningStep: 0, Ease: 2.5, DueAt: T0}
+	got := schedule.Apply(p, s, schedule.GradeHard, T0)
+	if !got.DueAt.Equal(T0.Add(time.Minute)) {
+		t.Fatalf("empty steps hard due: %v", got.DueAt)
+	}
+
+	// Negative step clamps to 0; oversized step clamps to last.
+	p = params()
+	s.LearningStep = -1
+	got = schedule.Apply(p, s, schedule.GradeHard, T0)
+	if got.LearningStep != 0 {
+		t.Fatalf("negative step clamp: got %d", got.LearningStep)
+	}
+	if !got.DueAt.Equal(T0.Add(time.Minute)) {
+		t.Fatalf("negative step due: %v", got.DueAt)
+	}
+	s.LearningStep = 99
+	got = schedule.Apply(p, s, schedule.GradeHard, T0)
+	if got.LearningStep != 1 {
+		t.Fatalf("oversized step clamp: got %d want 1", got.LearningStep)
+	}
+	if !got.DueAt.Equal(T0.Add(10 * time.Minute)) {
+		t.Fatalf("oversized step due: %v", got.DueAt)
+	}
+}
+
+// Unknown phase falls through to review transitions (no panic).
+func TestApplyUnknownPhaseUsesReview(t *testing.T) {
+	p := params()
+	T0 := t0()
+	s := schedule.State{
+		Phase:        "weird",
+		IntervalDays: 10,
+		Ease:         2.5,
+		DueAt:        T0,
+		Reps:         2,
+	}
+	got := schedule.Apply(p, s, schedule.GradeGood, T0)
+	// review Good: 10 * 2.5 = 25
+	if !almostEqual(got.IntervalDays, 25) {
+		t.Fatalf("interval: got %v want 25", got.IntervalDays)
+	}
+	if got.Reps != 3 {
+		t.Fatalf("reps: %d", got.Reps)
+	}
+}
+
+// ComfortableIntervalDays 0 falls back to 21 for unfamiliar highlight.
+func TestIsUnfamiliarZeroComfortableThreshold(t *testing.T) {
+	p := params()
+	p.ComfortableIntervalDays = 0
+	now := t0()
+	future := now.Add(time.Hour)
+	// interval 20.9 < default 21 → unfamiliar
+	if !schedule.IsUnfamiliar(p, schedule.State{
+		Phase: schedule.PhaseReview, IntervalDays: 20.9, DueAt: future,
+	}, now) {
+		t.Fatal("want unfamiliar under fallback threshold")
+	}
+	if schedule.IsUnfamiliar(p, schedule.State{
+		Phase: schedule.PhaseReview, IntervalDays: 21, DueAt: future,
+	}, now) {
+		t.Fatal("want familiar at interval 21 with fallback threshold")
+	}
+}
+
+// Invalid grade wire values already fail ParseGrade; Apply leaves state alone.
+func TestApplyUnknownGradeNoOp(t *testing.T) {
+	p := params()
+	T0 := t0()
+	s := schedule.State{
+		Phase: schedule.PhaseLearning, LearningStep: 1, Ease: 2.5, DueAt: T0,
+	}
+	got := schedule.Apply(p, s, schedule.Grade("maybe"), T0)
+	if got != s {
+		t.Fatalf("learning unknown grade should no-op: got %+v want %+v", got, s)
+	}
+	s = schedule.State{
+		Phase: schedule.PhaseReview, IntervalDays: 5, Ease: 2.5, DueAt: T0, Reps: 1,
+	}
+	got = schedule.Apply(p, s, schedule.Grade("maybe"), T0)
+	if got != s {
+		t.Fatalf("review unknown grade should no-op: got %+v want %+v", got, s)
+	}
+}

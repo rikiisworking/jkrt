@@ -88,14 +88,14 @@ golangci-lint run   # when configured
 | 2 | Dual NHK RSS scrape |
 | 3 | Review UI + SM-2 |
 | 4 | HTMX dashboard polish |
-| 5 | Auth harden + tunnel guide |
-| 6 | Stats, export, perf |
+| 5 | Auth harden + tunnel guide (done) |
+| 6 | Stats, export, perf (done) |
 
 ## Current status
 
-**Phase 4 (Frontend polish) — complete** (acceptance `go test ./...` green). Live **dashboard** on `GET /` (due/new counts, UTC session progress, last scrape, HTMX Scrape, empty library hint); browse **`GET /articles`** + **`GET /articles/:id`**; shared nav + theme `#3B82F6`; `review.Stats` + `db` browse reads. Phase 3 Review/SM-2 unchanged.
+**Phase 6 (Stats, export, performance) — complete** (acceptance `go test ./...` green). `GET /api/stats`, `GET /api/export?format=json|csv`, dashboard library/phase numbers + export links, `migrations/002_perf.sql`, ingest `MaxRawTextRunes` truncate, export row caps. **v1 planned phases 0–6 are done.**
 
-**Next:** Phase 5 — auth harden + tunnel docs (see `DEVELOPMENT_PLAN.md` Phase 5). Implement only the current phase unless the user explicitly asks otherwise.
+**Next:** No further planned phase. Only implement work the user explicitly requests (e.g. multi-source RSS later).
 
 ## Safety
 

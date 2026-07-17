@@ -106,3 +106,62 @@ func TestBrowseListAndDetail(t *testing.T) {
 		t.Fatal("empty sentence text")
 	}
 }
+
+// ListArticles(limit<=0) uses DefaultArticleListLimit; newest fetched_at first.
+func TestBrowseListDefaultLimitAndOrder(t *testing.T) {
+	d := openTestDB(t)
+	seedUser(t, d)
+	a, err := analyze.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t1 := time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 7, 17, 14, 0, 0, 0, time.UTC)
+
+	older, err := d.IngestText(db.LearnerUserID, "古い記事です。", a, t1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newer, err := d.IngestText(db.LearnerUserID, "新しい記事です。", a, t2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	list, err := d.ListArticles(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) < 2 {
+		t.Fatalf("list len: %d", len(list))
+	}
+	if list[0].ID != newer.ArticleID {
+		t.Fatalf("want newest first: got %d want %d", list[0].ID, newer.ArticleID)
+	}
+	if list[1].ID != older.ArticleID {
+		t.Fatalf("want older second: got %d want %d", list[1].ID, older.ArticleID)
+	}
+
+	limited, err := d.ListArticles(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(limited) != 1 || limited[0].ID != newer.ArticleID {
+		t.Fatalf("limit 1: %+v", limited)
+	}
+}
+
+func TestBrowseNilDB(t *testing.T) {
+	var d *db.DB
+	if _, err := d.ListArticles(10); err == nil {
+		t.Fatal("ListArticles nil want error")
+	}
+	if _, _, _, err := d.GetArticle(1); err == nil {
+		t.Fatal("GetArticle nil want error")
+	}
+	if _, _, err := d.LastArticleFetchedAt(); err == nil {
+		t.Fatal("LastArticleFetchedAt nil want error")
+	}
+	if _, err := d.CountArticles(); err == nil {
+		t.Fatal("CountArticles nil want error")
+	}
+}

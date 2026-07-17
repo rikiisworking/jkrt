@@ -85,6 +85,7 @@ func pageShell(title, active, extraHead, mainInner string) string {
 // DashboardData is the home page payload.
 type DashboardData struct {
 	Stats         review.Stats
+	Library       db.LibraryCounts
 	ArticleCount  int
 	LastFetchedAt string // empty if never scraped
 	HasLastFetch  bool
@@ -101,6 +102,18 @@ func dashboardHTML(d DashboardData) string {
 	if queueReady == 0 {
 		reviewCTA = "Review (empty)"
 	}
+
+	phaseLine := fmt.Sprintf(
+		"Cards: %d · words: %d · reviews: %d · mature: %d",
+		d.Library.Cards, d.Library.Words, d.Library.Reviews, d.Library.MatureCards,
+	)
+	byPhase := fmt.Sprintf(
+		"new %d · learning %d · review %d · relearning %d",
+		d.Library.ByPhase["new"],
+		d.Library.ByPhase["learning"],
+		d.Library.ByPhase["review"],
+		d.Library.ByPhase["relearning"],
+	)
 
 	inner := fmt.Sprintf(`
       <h1 class="text-2xl font-bold primary">Japanese Kanji Reading Trainer</h1>
@@ -129,10 +142,22 @@ func dashboardHTML(d DashboardData) string {
         <div class="flex items-start justify-between gap-3">
           <div>
             <p class="text-xs uppercase tracking-wide text-slate-400">Library</p>
-            <p class="mt-1 text-sm text-slate-800"><span class="font-semibold">%d</span> articles</p>
+            <p class="mt-1 text-sm text-slate-800"><span class="font-semibold">%d</span> articles · %d sentences</p>
+            <p class="mt-1 text-xs text-slate-600">%s</p>
+            <p class="mt-0.5 text-xs text-slate-500">%s</p>
             <p class="mt-1 text-xs text-slate-500">Last scrape: %s</p>
           </div>
           <a href="/articles" class="shrink-0 text-sm font-medium text-blue-500 hover:text-blue-600">Browse →</a>
+        </div>
+      </section>
+
+      <section class="mt-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+        <p class="text-xs uppercase tracking-wide text-slate-400">Export</p>
+        <p class="mt-1 text-xs text-slate-500">Backup Cards / Reviews (auth required).</p>
+        <div class="mt-3 flex flex-wrap gap-3">
+          <a href="/api/export?format=json" class="text-sm font-medium text-blue-500 hover:text-blue-600">JSON</a>
+          <a href="/api/export?format=csv" class="text-sm font-medium text-blue-500 hover:text-blue-600">CSV (cards)</a>
+          <a href="/api/stats" class="text-sm font-medium text-slate-500 hover:text-slate-700">Stats JSON</a>
         </div>
       </section>
 
@@ -156,6 +181,9 @@ func dashboardHTML(d DashboardData) string {
 		progressBar("Reviews today", d.Stats.ReviewsToday, d.Stats.SessionLimit),
 		progressBar("New introduced", d.Stats.NewIntroducedToday, d.Stats.NewPerDay),
 		d.ArticleCount,
+		d.Library.Sentences,
+		html.EscapeString(phaseLine),
+		html.EscapeString(byPhase),
 		html.EscapeString(lastScrape),
 		html.EscapeString(reviewCTA),
 		dashboardEmptyHint(d),

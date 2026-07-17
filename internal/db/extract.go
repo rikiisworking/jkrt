@@ -85,6 +85,9 @@ func (d *DB) IngestArticle(userID int64, src SourceRef, art ArticleInput, a *ana
 		fetchedAt = now
 	}
 
+	// Phase 6 size limit: cap raw_text before analyze (rune-safe).
+	art.RawText, _ = TruncateRawText(art.RawText)
+
 	// Fast dedupe path: no analyze when Article already stored (stable Scrape re-run).
 	sourceID, err := ensureSource(d.sql, src.Name, src.FeedURL, src.Notes)
 	if err != nil {

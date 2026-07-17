@@ -12,6 +12,7 @@ import (
 	"github.com/rikiisworking/jkrt/internal/auth"
 	"github.com/rikiisworking/jkrt/internal/config"
 	"github.com/rikiisworking/jkrt/internal/db"
+	"github.com/rikiisworking/jkrt/internal/export"
 	"github.com/rikiisworking/jkrt/internal/review"
 	"github.com/rikiisworking/jkrt/internal/schedule"
 	"github.com/rikiisworking/jkrt/internal/scrape"
@@ -28,6 +29,7 @@ type App struct {
 	DB          *db.DB
 	Analyzer    *analyze.Analyzer
 	Review      *review.Service
+	Export      *export.Service
 	// HTTPClient is used by Scrape; nil → default client with scrape.DefaultTimeout.
 	// Tests inject a fixture transport so no network is dialed.
 	HTTPClient scrape.HTTPDoer
@@ -45,7 +47,7 @@ type Options struct {
 	HTTPClient scrape.HTTPDoer
 }
 
-// New builds a Fiber application with Phase 0–4 routes.
+// New builds a Fiber application with Phase 0–6 routes.
 func New(opts Options) *App {
 	f := fiber.New(fiber.Config{
 		DisableStartupMessage: true,
@@ -84,6 +86,7 @@ func New(opts Options) *App {
 		DB:          opts.DB,
 		Analyzer:    opts.Analyzer,
 		Review:      rev,
+		Export:      export.New(opts.DB),
 		HTTPClient:  opts.HTTPClient,
 	}
 	a.routes()
@@ -107,6 +110,8 @@ func (a *App) routes() {
 	protected.Get("/", a.handleIndex)
 	protected.Post("/logout", a.handleLogout)
 	protected.Post("/api/scrape", a.handleScrape)
+	protected.Get("/api/stats", a.handleStats)
+	protected.Get("/api/export", a.handleExport)
 	protected.Get("/review", a.handleReviewGet)
 	protected.Post("/review", a.handleReviewPost)
 	protected.Get("/articles", a.handleArticlesList)
