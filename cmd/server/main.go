@@ -1,0 +1,61 @@
+package main
+
+import (
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+
+	"github.com/rikiisworking/jkrt/internal/auth"
+	"github.com/rikiisworking/jkrt/internal/config"
+	jkrthttp "github.com/rikiisworking/jkrt/internal/http"
+)
+
+func main() {
+	if err := run(); err != nil {
+		log.Fatalf("jkrt: %v", err)
+	}
+}
+
+func run() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+
+	var store *auth.Store
+	var sessions *auth.Manager
+
+	if cfg.AuthEnabled {
+		store, err = auth.OpenStore(cfg.DBPath)
+		if err != nil {
+			return fmt.Errorf("db: %w", err)
+		}
+		defer func() { _ = store.Close() }()
+
+		if err := auth.Bootstrap(store, true, cfg.Password); err != nil {
+			return fmt.Errorf("auth bootstrap: %w", err)
+		}
+		sessions = auth.NewManager(cfg.SessionSecret, cfg.SessionTTL)
+	}
+
+	workdir, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	staticDir := filepath.Join(workdir, "web", "static")
+	if _, err := os.Stat(staticDir); err != nil {
+		// Allow running from other cwd if static is missing; handlers fall back to inline HTML.
+		staticDir = ""
+	}
+
+	app := jkrthttp.New(jkrthttp.Options{
+		Config:    cfg,
+		Store:     store,
+		Sessions:  sessions,
+		StaticDir: staticDir,
+	})
+
+	log.Printf("jkrt listening on %s (auth=%v)", cfg.Addr, cfg.AuthEnabled)
+	return app.Listen()
+}

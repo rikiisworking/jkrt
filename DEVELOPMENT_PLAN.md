@@ -33,8 +33,8 @@
 
 | Field | Value |
 |-------|--------|
-| **Current phase** | Phase 0 — Project setup |
-| **Repo state** | Docs + domain model; no Go module yet |
+| **Current phase** | Phase 1 — Data layer, analyzer, Cards |
+| **Repo state** | Phase 0 complete: Fiber server, health, static placeholder, bcrypt + signed session auth |
 | **Last updated** | 2026-07-17 |
 | **Agent-ready** | Yes (pick-ones locked, SM-2 spec, HTTP surface, acceptance curls) |
 
@@ -329,16 +329,16 @@ Later phases may add dashboard routes; do not invent Phase 0–3 routes beyond t
 
 ## Phases
 
-### Phase 0: Project setup — **current**
+### Phase 0: Project setup — **done**
 
-- [ ] `go mod init github.com/rikiisworking/jkrt`
-- [ ] Layout: `cmd/server`, `internal/config`, `internal/auth`, `internal/http`, `web/static`
-- [ ] Fiber server + env config
-- [ ] `GET /health`
-- [ ] Static placeholder + Tailwind CDN + Noto Sans JP link
-- [ ] `.gitignore` as above; optional `.env.example`
-- [ ] Auth: bcrypt bootstrap, signed cookie session, login/logout, middleware
-- [ ] README quick start matches reality
+- [x] `go mod init github.com/rikiisworking/jkrt`
+- [x] Layout: `cmd/server`, `internal/config`, `internal/auth`, `internal/http`, `web/static`
+- [x] Fiber server + env config
+- [x] `GET /health`
+- [x] Static placeholder + Tailwind CDN + Noto Sans JP link
+- [x] `.gitignore` as above; optional `.env.example`
+- [x] Auth: bcrypt bootstrap, signed cookie session, login/logout, middleware
+- [x] README quick start matches reality
 
 **Tests:** health 200; auth off open; auth on 401/302 without cookie; login success sets cookie.
 
@@ -379,7 +379,7 @@ curl -sS -b /tmp/jkrt-cj -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8080/
 
 ---
 
-### Phase 1: Data layer, analyzer, Cards
+### Phase 1: Data layer, analyzer, Cards — **current**
 
 - [ ] `migrations/001_init.sql` + apply on startup
 - [ ] Kagome wrapper → candidates + spans
@@ -517,6 +517,7 @@ go test ./... -count=1
 
 | Date | Note |
 |------|------|
+| 2026-07-17 | Phase 0 complete: go module, Fiber, `/health`, static placeholder (Tailwind CDN + Noto Sans JP), bcrypt + HMAC session auth, acceptance curls green. |
 | 2026-07-17 | Agent-hardening: sm2-spec, HTTP table, locked pick-ones, acceptance curls, CDN rule, feed URL notes. |
 | 2026-07-17 | Grill: Word unit, Kagome path, dual NHK RSS-only, SM-2 4-button. |
 | 2026-07-17 | Character-based plan superseded. |

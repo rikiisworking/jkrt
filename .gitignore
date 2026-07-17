@@ -1,0 +1,11 @@
+/bin/
+/tmp/
+*.db
+*.db-journal
+.env
+.env.*
+!.env.example
+dist/
+node_modules/
+.DS_Store
+coverage.out

@@ -92,7 +92,7 @@ golangci-lint run   # when configured
 
 ## Current status
 
-**Phase 0 (Setup) — not started in code.** Docs hardened for agent-driven work (2026-07-17). Follow the plan sequentially.
+**Phase 0 (Setup) — complete.** Fiber server, health, static placeholder, password auth. **Next: Phase 1** (schema, Kagome, words/cards).
 
 ## Safety
 
