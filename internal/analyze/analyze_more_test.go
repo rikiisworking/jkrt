@@ -129,6 +129,8 @@ func TestIsWordCandidateTable(t *testing.T) {
 		{"経済", "ケイザイ", true},
 		{"経済", "", false},
 		{"経済", " \t ", false},
+		{"経済", "*", false},
+		{"経済", " * ", false},
 		{"を", "ヲ", false},
 		{"する", "スル", false},
 		{"", "ケイザイ", false},
@@ -138,6 +140,24 @@ func TestIsWordCandidateTable(t *testing.T) {
 		if got := analyze.IsWordCandidate(tc.surface, tc.reading); got != tc.want {
 			t.Errorf("IsWordCandidate(%q,%q)=%v want %v", tc.surface, tc.reading, got, tc.want)
 		}
+	}
+}
+
+func TestValidReadingAndMeCabPlaceholder(t *testing.T) {
+	if analyze.ValidReading("*") {
+		t.Fatal("MeCab * must not be a valid reading")
+	}
+	if analyze.ValidReading("") {
+		t.Fatal("empty reading invalid")
+	}
+	if !analyze.ValidReading("ケイザイ") {
+		t.Fatal("kana reading should be valid")
+	}
+	if !analyze.IsMeCabPlaceholder("*") || !analyze.IsMeCabPlaceholder(" * ") {
+		t.Fatal("expected * placeholders")
+	}
+	if analyze.IsMeCabPlaceholder("ケイザイ") {
+		t.Fatal("real reading is not a placeholder")
 	}
 }
 

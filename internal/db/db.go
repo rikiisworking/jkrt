@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -18,7 +19,7 @@ type DB struct {
 }
 
 // Open opens (or creates) SQLite at dbPath and applies *.sql files from migrationsDir
-// in lexicographic order. migrationsDir must contain 001_init.sql (or equivalent).
+// in lexicographic order. Already-applied files (schema_migrations) are skipped.
 func Open(dbPath, migrationsDir string) (*DB, error) {
 	if migrationsDir == "" {
 		dir, err := FindMigrationsDir()
@@ -65,6 +66,14 @@ func (d *DB) Close() error {
 }
 
 func applyMigrations(sqlDB *sql.DB, dir string) error {
+	if _, err := sqlDB.Exec(`
+CREATE TABLE IF NOT EXISTS schema_migrations (
+	name TEXT PRIMARY KEY,
+	applied_at TEXT NOT NULL
+);`); err != nil {
+		return fmt.Errorf("create schema_migrations: %w", err)
+	}
+
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return fmt.Errorf("read migrations dir %q: %w", dir, err)
@@ -85,12 +94,29 @@ func applyMigrations(sqlDB *sql.DB, dir string) error {
 	sort.Strings(files)
 
 	for _, path := range files {
+		name := filepath.Base(path)
+		var n int
+		if err := sqlDB.QueryRow(
+			`SELECT COUNT(1) FROM schema_migrations WHERE name = ?`, name,
+		).Scan(&n); err != nil {
+			return fmt.Errorf("check migration %s: %w", name, err)
+		}
+		if n > 0 {
+			continue
+		}
+
 		body, err := os.ReadFile(path)
 		if err != nil {
 			return fmt.Errorf("read migration %s: %w", path, err)
 		}
 		if _, err := sqlDB.Exec(string(body)); err != nil {
 			return fmt.Errorf("apply migration %s: %w", path, err)
+		}
+		if _, err := sqlDB.Exec(
+			`INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)`,
+			name, time.Now().UTC().Format(time.RFC3339),
+		); err != nil {
+			return fmt.Errorf("record migration %s: %w", name, err)
 		}
 	}
 	return nil

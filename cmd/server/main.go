@@ -42,15 +42,20 @@ func run() error {
 	}
 	defer func() { _ = database.Close() }()
 
-	var store *auth.Store
+	store := auth.NewStore(database.SQL())
 	var sessions *auth.Manager
 
 	if cfg.AuthEnabled {
-		store = auth.NewStore(database.SQL())
 		if err := auth.Bootstrap(store, true, cfg.Password); err != nil {
 			return fmt.Errorf("auth bootstrap: %w", err)
 		}
 		sessions = auth.NewManager(cfg.SessionSecret, cfg.SessionTTL)
+	} else {
+		// Auth off: still need users.id=1 for Card FKs (extract / future scrape).
+		if err := auth.EnsureLearnerRow(store); err != nil {
+			return fmt.Errorf("ensure learner: %w", err)
+		}
+		store = nil // no login paths when auth is off
 	}
 
 	staticDir := filepath.Join(workdir, "web", "static")

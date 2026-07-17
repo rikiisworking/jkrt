@@ -4,6 +4,8 @@ go 1.25.0
 
 require (
 	github.com/gofiber/fiber/v2 v2.52.14
+	github.com/ikawaha/kagome-dict/ipa v1.2.6
+	github.com/ikawaha/kagome/v2 v2.11.0
 	golang.org/x/crypto v0.54.0
 	modernc.org/sqlite v1.54.0
 )
@@ -13,9 +15,6 @@ require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/ikawaha/kagome-dict v1.1.7 // indirect
-	github.com/ikawaha/kagome-dict/ipa v1.2.6 // indirect
-	github.com/ikawaha/kagome-dict/uni v1.2.6 // indirect
-	github.com/ikawaha/kagome/v2 v2.11.0 // indirect
 	github.com/klauspost/compress v1.17.9 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect

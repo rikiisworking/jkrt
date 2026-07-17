@@ -207,6 +207,7 @@ func TestProcessTextMultiSentence(t *testing.T) {
 	}
 
 	// order_index 0 then 1
+	// Note: MaxOpenConns(1) — must Close rows before the next query or the pool deadlocks.
 	var o0, o1 int
 	var t0, t1 string
 	rows, err := d.SQL().Query(
@@ -216,17 +217,23 @@ func TestProcessTextMultiSentence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
 	if !rows.Next() {
+		_ = rows.Close()
 		t.Fatal("missing sentence 0")
 	}
 	if err := rows.Scan(&o0, &t0); err != nil {
+		_ = rows.Close()
 		t.Fatal(err)
 	}
 	if !rows.Next() {
+		_ = rows.Close()
 		t.Fatal("missing sentence 1")
 	}
 	if err := rows.Scan(&o1, &t1); err != nil {
+		_ = rows.Close()
+		t.Fatal(err)
+	}
+	if err := rows.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if o0 != 0 || o1 != 1 {
@@ -319,7 +326,7 @@ func TestExtractSentenceNilAnalyzer(t *testing.T) {
 	}
 }
 
-func TestEmptyLemmaSkippedOnPersist(t *testing.T) {
+func TestEmptyLemmaUsesSurfaceOnPersist(t *testing.T) {
 	d := openTestDB(t)
 	seedUser(t, d)
 	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
@@ -327,7 +334,9 @@ func TestEmptyLemmaSkippedOnPersist(t *testing.T) {
 
 	cands := []analyze.Candidate{
 		{Lemma: "", Reading: "ケイザイ", Surface: "経済", CharStart: 0, CharEnd: 2},
-		{Lemma: "政策", Reading: "セイサク", Surface: "政策", CharStart: 2, CharEnd: 4},
+		{Lemma: "*", Reading: "セイサク", Surface: "政策", CharStart: 2, CharEnd: 4},
+		{Lemma: "空", Reading: "*", Surface: "空", CharStart: 4, CharEnd: 5},
+		{Lemma: "空読", Reading: "   ", Surface: "空読", CharStart: 5, CharEnd: 7},
 	}
 	if err := d.PersistCandidates(db.LearnerUserID, sid, cands, now); err != nil {
 		t.Fatal(err)
@@ -336,8 +345,111 @@ func TestEmptyLemmaSkippedOnPersist(t *testing.T) {
 	if err := d.SQL().QueryRow(`SELECT COUNT(1) FROM words`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
+	if n != 2 {
+		t.Fatalf("want 経済+政策 (lemma fallback); skip * reading; words=%d", n)
+	}
+	var starLemma int
+	if err := d.SQL().QueryRow(`SELECT COUNT(1) FROM words WHERE lemma = '*'`).Scan(&starLemma); err != nil {
+		t.Fatal(err)
+	}
+	if starLemma != 0 {
+		t.Fatal("MeCab * must not become a lemma")
+	}
+}
+
+func TestProcessTextSameNowNoCollision(t *testing.T) {
+	d := openTestDB(t)
+	seedUser(t, d)
+	a, err := analyze.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	// Same clock + same text length must still produce distinct articles.
+	id1, err := d.ProcessText(db.LearnerUserID, "経済。", a, now)
+	if err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	id2, err := d.ProcessText(db.LearnerUserID, "政策。", a, now)
+	if err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	if id1 == id2 {
+		t.Fatal("expected distinct article ids")
+	}
+	var n int
+	if err := d.SQL().QueryRow(`SELECT COUNT(1) FROM articles`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("articles=%d want 2", n)
+	}
+}
+
+func TestReExtractSameSentenceReplacesOccurrences(t *testing.T) {
+	d := openTestDB(t)
+	seedUser(t, d)
+	a, err := analyze.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	sid := seedSentence(t, d, now, "経済政策を発表した。")
+
+	if err := d.ExtractSentence(db.LearnerUserID, sid, "経済政策を発表した。", a, now); err != nil {
+		t.Fatal(err)
+	}
+	var first int
+	if err := d.SQL().QueryRow(`SELECT COUNT(1) FROM sentence_words WHERE sentence_id = ?`, sid).Scan(&first); err != nil {
+		t.Fatal(err)
+	}
+	if first != 3 {
+		t.Fatalf("sentence_words first=%d want 3", first)
+	}
+
+	if err := d.ExtractSentence(db.LearnerUserID, sid, "経済政策を発表した。", a, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	var second int
+	if err := d.SQL().QueryRow(`SELECT COUNT(1) FROM sentence_words WHERE sentence_id = ?`, sid).Scan(&second); err != nil {
+		t.Fatal(err)
+	}
+	if second != first {
+		t.Fatalf("re-extract should replace not duplicate: first=%d second=%d", first, second)
+	}
+}
+
+func TestSchemaMigrationsRecorded(t *testing.T) {
+	d := openTestDB(t)
+	var n int
+	if err := d.SQL().QueryRow(
+		`SELECT COUNT(1) FROM schema_migrations WHERE name = '001_init.sql'`,
+	).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
 	if n != 1 {
-		t.Fatalf("empty lemma must skip: words=%d", n)
+		t.Fatalf("expected 001_init.sql recorded, got %d", n)
+	}
+	// Second open must not re-apply / must stay at 1 row for that name.
+	path := filepath.Join(t.TempDir(), "mig.db")
+	mig := migrationsDir(t)
+	d1, err := db.Open(path, mig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = d1.Close()
+	d2, err := db.Open(path, mig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d2.Close() })
+	if err := d2.SQL().QueryRow(
+		`SELECT COUNT(1) FROM schema_migrations WHERE name = '001_init.sql'`,
+	).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("duplicate migration records: %d", n)
 	}
 }
 

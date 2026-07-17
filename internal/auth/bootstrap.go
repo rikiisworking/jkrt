@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 )
 
@@ -34,4 +36,29 @@ func Bootstrap(store *Store, authEnabled bool, password string) error {
 		return err
 	}
 	return nil
+}
+
+// EnsureLearnerRow ensures users.id=1 exists for FK targets (cards, reviews).
+// Used when JKRT_AUTH=off so extract/scrape can create Cards without a login bootstrap.
+// The password hash is random and unknown (not for login).
+func EnsureLearnerRow(store *Store) error {
+	if store == nil {
+		return fmt.Errorf("auth store is required")
+	}
+	has, err := store.HasUser()
+	if err != nil {
+		return fmt.Errorf("check user: %w", err)
+	}
+	if has {
+		return nil
+	}
+	var secret [32]byte
+	if _, err := rand.Read(secret[:]); err != nil {
+		return fmt.Errorf("random learner secret: %w", err)
+	}
+	hash, err := HashPassword(hex.EncodeToString(secret[:]))
+	if err != nil {
+		return fmt.Errorf("hash placeholder password: %w", err)
+	}
+	return store.CreateUser1(hash)
 }

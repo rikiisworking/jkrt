@@ -178,6 +178,33 @@ func TestBootstrapSkippedWhenAuthOff(t *testing.T) {
 	}
 }
 
+func TestEnsureLearnerRow(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if err := EnsureLearnerRow(store); err != nil {
+		t.Fatalf("EnsureLearnerRow: %v", err)
+	}
+	has, err := store.HasUser()
+	if err != nil || !has {
+		t.Fatalf("HasUser after ensure: has=%v err=%v", has, err)
+	}
+	// Idempotent
+	if err := EnsureLearnerRow(store); err != nil {
+		t.Fatalf("second EnsureLearnerRow: %v", err)
+	}
+}
+
+func TestEnsureLearnerRowNilStore(t *testing.T) {
+	if err := EnsureLearnerRow(nil); err == nil {
+		t.Fatal("expected error for nil store")
+	}
+}
+
 func TestPasswordHashMissingUser(t *testing.T) {
 	dir := t.TempDir()
 	store, err := OpenStore(filepath.Join(dir, "test.db"))

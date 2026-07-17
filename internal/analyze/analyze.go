@@ -51,7 +51,7 @@ func Default() (*Analyzer, error) {
 }
 
 // Candidates tokenizes sentence text and returns Word candidates only:
-// Tokens with ≥1 kanji and a non-empty reading. Empty readings are skipped.
+// Tokens with ≥1 kanji and a non-empty reading. Empty/placeholder readings are skipped.
 func (a *Analyzer) Candidates(sentence string) ([]Candidate, error) {
 	if a == nil || a.tok == nil {
 		return nil, fmt.Errorf("analyzer is nil")
@@ -69,7 +69,6 @@ func (a *Analyzer) Candidates(sentence string) ([]Candidate, error) {
 }
 
 // candidateFromToken applies the locked Word-candidate rule.
-// Exported via testing through Candidates; logic kept pure for unit tests of edge cases.
 func candidateFromToken(tok tokenizer.Token) (Candidate, bool) {
 	surface := tok.Surface
 	if surface == "" {
@@ -80,15 +79,19 @@ func candidateFromToken(tok tokenizer.Token) (Candidate, bool) {
 	}
 
 	reading, ok := tok.Reading()
-	reading = strings.TrimSpace(reading)
-	if !ok || reading == "" {
-		// Empty reading: skip — no Word, no Card (DEVELOPMENT_PLAN).
+	if !ok || !ValidReading(reading) {
+		// Empty or MeCab "*" placeholder: skip — no Word, no Card.
 		return Candidate{}, false
 	}
+	reading = strings.TrimSpace(reading)
 
 	lemma := surface
-	if base, ok := tok.BaseForm(); ok && strings.TrimSpace(base) != "" {
-		lemma = base
+	if base, ok := tok.BaseForm(); ok {
+		base = strings.TrimSpace(base)
+		// MeCab uses "*" for unknown base; keep surface as lemma.
+		if base != "" && !IsMeCabPlaceholder(base) {
+			lemma = base
+		}
 	}
 
 	// Kagome Start/End are rune offsets into the input string.
@@ -99,6 +102,20 @@ func candidateFromToken(tok tokenizer.Token) (Candidate, bool) {
 		CharStart: tok.Start,
 		CharEnd:   tok.End,
 	}, true
+}
+
+// IsMeCabPlaceholder reports whether s is the MeCab/IPA unknown marker "*".
+func IsMeCabPlaceholder(s string) bool {
+	return strings.TrimSpace(s) == "*"
+}
+
+// ValidReading reports whether reading can form Word identity (non-empty kana, not "*").
+func ValidReading(reading string) bool {
+	r := strings.TrimSpace(reading)
+	if r == "" || IsMeCabPlaceholder(r) {
+		return false
+	}
+	return true
 }
 
 // ContainsKanji reports whether s contains at least one Han (kanji) character.
@@ -112,13 +129,10 @@ func ContainsKanji(s string) bool {
 }
 
 // IsWordCandidate reports whether surface+reading would become a Word candidate.
-// Used by tests for empty-reading and pure-kana cases without depending on Kagome output.
+// Used by tests and PersistCandidates defense-in-depth without depending on Kagome.
 func IsWordCandidate(surface, reading string) bool {
 	if !ContainsKanji(surface) {
 		return false
 	}
-	if strings.TrimSpace(reading) == "" {
-		return false
-	}
-	return true
+	return ValidReading(reading)
 }

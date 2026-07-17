@@ -1,8 +1,12 @@
 package db
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/rikiisworking/jkrt/internal/analyze"
@@ -14,10 +18,10 @@ const StartingEase = 2.5
 // LearnerUserID is the single v1 learner (users.id = 1).
 const LearnerUserID int64 = 1
 
-// PersistCandidates upserts Words, inserts sentence_words rows, and creates
+// PersistCandidates upserts Words, replaces sentence_words for the sentence, and creates
 // new Cards (phase=new) for the learner. Existing cards are left unchanged.
 //
-// candidates must already be filtered Word candidates (kanji + non-empty reading).
+// Candidates are filtered again for empty/placeholder readings (defense in depth).
 func (d *DB) PersistCandidates(userID, sentenceID int64, candidates []analyze.Candidate, now time.Time) error {
 	if d == nil || d.sql == nil {
 		return fmt.Errorf("db is nil")
@@ -35,32 +39,9 @@ func (d *DB) PersistCandidates(userID, sentenceID int64, candidates []analyze.Ca
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	nowStr := now.UTC().Format(time.RFC3339)
-
-	for _, c := range candidates {
-		if c.Lemma == "" || c.Reading == "" {
-			// Defense in depth: empty reading must never create a Word/Card.
-			continue
-		}
-
-		wordID, err := upsertWordTx(tx, c.Lemma, c.Reading)
-		if err != nil {
-			return err
-		}
-
-		if _, err := tx.Exec(
-			`INSERT INTO sentence_words (sentence_id, word_id, surface, char_start, char_end, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?)`,
-			sentenceID, wordID, c.Surface, c.CharStart, c.CharEnd, nowStr,
-		); err != nil {
-			return fmt.Errorf("insert sentence_word: %w", err)
-		}
-
-		if err := upsertNewCardTx(tx, userID, wordID, nowStr); err != nil {
-			return err
-		}
+	if err := persistCandidatesTx(tx, userID, sentenceID, candidates, now); err != nil {
+		return err
 	}
-
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}
@@ -98,6 +79,9 @@ func (d *DB) EnsureSource(name, feedURL, notes string) (int64, error) {
 	if err == nil {
 		return id, nil
 	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return 0, fmt.Errorf("select source: %w", err)
+	}
 	res, err := d.sql.Exec(
 		`INSERT INTO news_sources (name, feed_url, enabled, notes) VALUES (?, ?, 1, ?)`,
 		name, feedURL, notes,
@@ -122,41 +106,164 @@ func (d *DB) InsertArticle(sourceID int64, externalID, title, url, rawText strin
 }
 
 // ProcessText is the Phase 1 library path: raw Japanese string → sentences → words/cards.
-// It creates a synthetic source/article chain, splits sentences, analyzes, and persists.
+// It creates a synthetic source/article chain, splits sentences, analyzes, and persists
+// in a single transaction (no partial articles on mid-loop failure).
 func (d *DB) ProcessText(userID int64, text string, a *analyze.Analyzer, now time.Time) (articleID int64, err error) {
+	if d == nil || d.sql == nil {
+		return 0, fmt.Errorf("db is nil")
+	}
 	if a == nil {
 		return 0, fmt.Errorf("analyzer is nil")
 	}
-
-	sourceID, err := d.EnsureSource("manual", "", "Phase 1 library ingest (not RSS)")
-	if err != nil {
-		return 0, err
+	if userID == 0 {
+		return 0, fmt.Errorf("userID is required")
 	}
 
-	// external_id unique per call via timestamp + length
-	extID := fmt.Sprintf("manual-%d-%d", now.UnixNano(), len(text))
-	articleID, err = d.InsertArticle(sourceID, extID, "manual", "", text, now)
-	if err != nil {
-		return 0, err
-	}
-
+	// Analyze outside the DB transaction so failures leave no partial rows.
 	sentences := analyze.SplitSentences(text)
-	for i, s := range sentences {
-		sid, err := d.InsertSentence(articleID, s, i)
+	type item struct {
+		text  string
+		cands []analyze.Candidate
+	}
+	items := make([]item, 0, len(sentences))
+	for _, s := range sentences {
+		cands, err := a.Candidates(s)
 		if err != nil {
-			return articleID, err
+			return 0, err
 		}
-		if err := d.ExtractSentence(userID, sid, s, a, now); err != nil {
-			return articleID, err
+		items = append(items, item{text: s, cands: cands})
+	}
+
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	sourceID, err := ensureSourceTx(tx, "manual", "", "Phase 1 library ingest (not RSS)")
+	if err != nil {
+		return 0, err
+	}
+
+	extID, err := newManualExternalID()
+	if err != nil {
+		return 0, err
+	}
+	articleID, err = insertArticleTx(tx, sourceID, extID, "manual", "", text, now)
+	if err != nil {
+		return 0, err
+	}
+
+	for i, it := range items {
+		sid, err := insertSentenceTx(tx, articleID, it.text, i)
+		if err != nil {
+			return 0, err
 		}
+		if err := persistCandidatesTx(tx, userID, sid, it.cands, now); err != nil {
+			return 0, err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit: %w", err)
 	}
 	return articleID, nil
 }
 
-func upsertWordTx(tx interface {
-	QueryRow(query string, args ...any) *sql.Row
-	Exec(query string, args ...any) (sql.Result, error)
-}, lemma, reading string) (int64, error) {
+func newManualExternalID() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("random external_id: %w", err)
+	}
+	return "manual-" + hex.EncodeToString(b[:]), nil
+}
+
+func persistCandidatesTx(tx *sql.Tx, userID, sentenceID int64, candidates []analyze.Candidate, now time.Time) error {
+	nowStr := now.UTC().Format(time.RFC3339)
+
+	// Re-extract replaces occurrence rows for this sentence (no duplicates).
+	if _, err := tx.Exec(`DELETE FROM sentence_words WHERE sentence_id = ?`, sentenceID); err != nil {
+		return fmt.Errorf("clear sentence_words: %w", err)
+	}
+
+	for _, c := range candidates {
+		surface := c.Surface
+		reading := strings.TrimSpace(c.Reading)
+		// Defense in depth: empty / MeCab "*" reading must never create a Word/Card.
+		if !analyze.IsWordCandidate(surface, reading) {
+			continue
+		}
+		lemma := strings.TrimSpace(c.Lemma)
+		if lemma == "" || analyze.IsMeCabPlaceholder(lemma) {
+			lemma = strings.TrimSpace(surface)
+		}
+		if lemma == "" || analyze.IsMeCabPlaceholder(lemma) {
+			continue
+		}
+
+		wordID, err := upsertWordTx(tx, lemma, reading)
+		if err != nil {
+			return err
+		}
+
+		if _, err := tx.Exec(
+			`INSERT INTO sentence_words (sentence_id, word_id, surface, char_start, char_end, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
+			sentenceID, wordID, surface, c.CharStart, c.CharEnd, nowStr,
+		); err != nil {
+			return fmt.Errorf("insert sentence_word: %w", err)
+		}
+
+		if err := upsertNewCardTx(tx, userID, wordID, nowStr); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensureSourceTx(tx *sql.Tx, name, feedURL, notes string) (int64, error) {
+	var id int64
+	err := tx.QueryRow(`SELECT id FROM news_sources WHERE name = ?`, name).Scan(&id)
+	if err == nil {
+		return id, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return 0, fmt.Errorf("select source: %w", err)
+	}
+	res, err := tx.Exec(
+		`INSERT INTO news_sources (name, feed_url, enabled, notes) VALUES (?, ?, 1, ?)`,
+		name, feedURL, notes,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("insert source: %w", err)
+	}
+	return res.LastInsertId()
+}
+
+func insertArticleTx(tx *sql.Tx, sourceID int64, externalID, title, url, rawText string, fetchedAt time.Time) (int64, error) {
+	res, err := tx.Exec(
+		`INSERT INTO articles (source_id, external_id, title, url, fetched_at, raw_text)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		sourceID, externalID, title, url, fetchedAt.UTC().Format(time.RFC3339), rawText,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("insert article: %w", err)
+	}
+	return res.LastInsertId()
+}
+
+func insertSentenceTx(tx *sql.Tx, articleID int64, text string, orderIndex int) (int64, error) {
+	res, err := tx.Exec(
+		`INSERT INTO sentences (article_id, text, order_index) VALUES (?, ?, ?)`,
+		articleID, text, orderIndex,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("insert sentence: %w", err)
+	}
+	return res.LastInsertId()
+}
+
+func upsertWordTx(tx *sql.Tx, lemma, reading string) (int64, error) {
 	var id int64
 	err := tx.QueryRow(
 		`SELECT id FROM words WHERE lemma = ? AND reading = ?`,
@@ -165,13 +272,16 @@ func upsertWordTx(tx interface {
 	if err == nil {
 		return id, nil
 	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return 0, fmt.Errorf("select word: %w", err)
+	}
 
 	res, err := tx.Exec(
 		`INSERT INTO words (lemma, reading) VALUES (?, ?)`,
 		lemma, reading,
 	)
 	if err != nil {
-		// Race / concurrent insert: re-select
+		// Concurrent insert race: re-select.
 		err2 := tx.QueryRow(
 			`SELECT id FROM words WHERE lemma = ? AND reading = ?`,
 			lemma, reading,
@@ -184,9 +294,7 @@ func upsertWordTx(tx interface {
 	return res.LastInsertId()
 }
 
-func upsertNewCardTx(tx interface {
-	Exec(query string, args ...any) (sql.Result, error)
-}, userID, wordID int64, nowStr string) error {
+func upsertNewCardTx(tx *sql.Tx, userID, wordID int64, nowStr string) error {
 	// New card defaults from docs/sm2-spec.md
 	_, err := tx.Exec(
 		`INSERT INTO cards (
