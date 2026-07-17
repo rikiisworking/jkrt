@@ -72,9 +72,8 @@ func run() error {
 		staticDir = ""
 	}
 
-	// Shared SM-2 params for extract (NewCard) and Review (Apply / queue caps).
+	// Review owns schedule.Params; http.New syncs them onto DB for extract + counts.
 	params := schedule.DefaultParams()
-	database.SetScheduleParams(params)
 	rev := review.New(database, params)
 
 	app := jkrthttp.New(jkrthttp.Options{

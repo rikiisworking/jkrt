@@ -578,6 +578,7 @@ go test ./... -count=1
 
 | Date | Note |
 |------|------|
+| 2026-07-17 | Architecture deepen: `snapshot.Load` composes queue+library for dashboard/stats/export; mature counts use `schedule.Params` (no forked 21); `http.New` syncs Review.Params onto DB (single boot path). |
 | 2026-07-17 | Phase 6 **complete**: `/api/stats`, `/api/export` JSON/CSV, dashboard library/export links, `002_perf.sql` indexes, raw_text truncate + export caps; export fixture tests. v1 phase plan complete. |
 | 2026-07-17 | Phase 5 **complete**: cookie/TTL docs, password rotate (`cmd/setpassword`), tunnel guide (never auth off), expired-session HTTP 302/401 tests, login `MaxAge`. Next: Phase 6 only. |
 | 2026-07-17 | Phase 4 **complete**: live dashboard (`GET /`) with due/new, UTC session progress bars, last scrape, HTMX Scrape button; `GET /articles` + `GET /articles/:id` browse; shared nav/theme; empty states; `review.Stats` + `db` browse reads; handler smoke tests. Next: Phase 5 only. |

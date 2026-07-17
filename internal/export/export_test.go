@@ -14,6 +14,7 @@ import (
 	"github.com/rikiisworking/jkrt/internal/export"
 	"github.com/rikiisworking/jkrt/internal/review"
 	"github.com/rikiisworking/jkrt/internal/schedule"
+	"github.com/rikiisworking/jkrt/internal/snapshot"
 )
 
 func TestParseFormat(t *testing.T) {
@@ -49,20 +50,16 @@ func TestExportJSONAndCSVFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	queue, err := svc.Stats(db.LearnerUserID, now)
+	view, err := snapshot.Load(svc, d, db.LearnerUserID, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	lib, err := d.LibraryCounts(db.LearnerUserID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if lib.Words < 1 || lib.Cards < 1 || lib.Reviews != 1 {
-		t.Fatalf("library counts: %+v", lib)
+	if view.Library.Words < 1 || view.Library.Cards < 1 || view.Library.Reviews != 1 {
+		t.Fatalf("library counts: %+v", view.Library)
 	}
 
 	exp := export.New(d)
-	snap, err := exp.BuildSnapshot(db.LearnerUserID, queue, lib, now)
+	snap, err := exp.BuildSnapshot(db.LearnerUserID, view, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +113,9 @@ func TestExportEmpty(t *testing.T) {
 	d := openTestDB(t)
 	seedUser(t, d)
 	exp := export.New(d)
-	snap, err := exp.BuildSnapshot(db.LearnerUserID, review.Stats{}, db.LibraryCounts{ByPhase: map[string]int{}}, time.Now().UTC())
+	snap, err := exp.BuildSnapshot(db.LearnerUserID, snapshot.View{
+		Library: db.LibraryCounts{ByPhase: map[string]int{}},
+	}, time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +129,7 @@ func TestExportEmpty(t *testing.T) {
 
 func TestExportNilService(t *testing.T) {
 	exp := export.New(nil)
-	_, err := exp.BuildSnapshot(1, review.Stats{}, db.LibraryCounts{}, time.Now().UTC())
+	_, err := exp.BuildSnapshot(1, snapshot.View{}, time.Now().UTC())
 	if err == nil {
 		t.Fatal("expected error")
 	}

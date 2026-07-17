@@ -13,14 +13,12 @@ type LibraryCounts struct {
 	Reviews   int
 	// ByPhase keys: new, learning, review, relearning (missing keys mean 0).
 	ByPhase map[string]int
-	// MatureCards: phase=review AND interval_days >= ComfortableIntervalDays (21).
+	// MatureCards: phase=review AND interval_days >= schedule.Params.ComfortableIntervalDays.
 	MatureCards int
 }
 
-// ComfortableIntervalDays matches schedule.DefaultParams for mature highlight threshold.
-const ComfortableIntervalDays = 21
-
 // LibraryCounts returns totals for the Learner library and Card phases.
+// Mature threshold comes from SetScheduleParams / schedule.DefaultParams (not a forked constant).
 func (d *DB) LibraryCounts(userID int64) (LibraryCounts, error) {
 	if d == nil || d.sql == nil {
 		return LibraryCounts{}, fmt.Errorf("db is nil")
@@ -28,6 +26,12 @@ func (d *DB) LibraryCounts(userID int64) (LibraryCounts, error) {
 	var c LibraryCounts
 	c.ByPhase = map[string]int{
 		"new": 0, "learning": 0, "review": 0, "relearning": 0,
+	}
+
+	// Same fallback as schedule.IsUnfamiliar when ComfortableIntervalDays is 0.
+	threshold := d.scheduleParams().ComfortableIntervalDays
+	if threshold == 0 {
+		threshold = 21
 	}
 
 	queries := []struct {
@@ -40,7 +44,7 @@ func (d *DB) LibraryCounts(userID int64) (LibraryCounts, error) {
 		{&c.Words, `SELECT COUNT(1) FROM words`, nil},
 		{&c.Cards, `SELECT COUNT(1) FROM cards WHERE user_id = ?`, []any{userID}},
 		{&c.Reviews, `SELECT COUNT(1) FROM reviews WHERE user_id = ?`, []any{userID}},
-		{&c.MatureCards, `SELECT COUNT(1) FROM cards WHERE user_id = ? AND phase = 'review' AND interval_days >= ?`, []any{userID, float64(ComfortableIntervalDays)}},
+		{&c.MatureCards, `SELECT COUNT(1) FROM cards WHERE user_id = ? AND phase = 'review' AND interval_days >= ?`, []any{userID, threshold}},
 	}
 	for _, q := range queries {
 		if err := d.sql.QueryRow(q.sql, q.args...).Scan(q.dest); err != nil {

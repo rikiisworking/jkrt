@@ -8,6 +8,7 @@ import (
 
 	"github.com/rikiisworking/jkrt/internal/analyze"
 	"github.com/rikiisworking/jkrt/internal/db"
+	"github.com/rikiisworking/jkrt/internal/schedule"
 )
 
 func TestLibraryCountsEmpty(t *testing.T) {
@@ -220,5 +221,48 @@ func TestTruncateRawTextExactBoundary(t *testing.T) {
 	}
 	if out != exact {
 		t.Fatal("exact max mutated")
+	}
+}
+
+// Mature threshold follows SetScheduleParams (not a forked constant).
+func TestLibraryCountsMatureUsesScheduleParams(t *testing.T) {
+	d := openTestDB(t)
+	seedUser(t, d)
+	a, err := analyze.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	if _, err := d.IngestText(db.LearnerUserID, "経済。", a, now); err != nil {
+		t.Fatal(err)
+	}
+	// interval 15: mature under threshold 10, not under default 21
+	_, err = d.SQL().Exec(
+		`UPDATE cards SET phase = 'review', interval_days = 15, due_at = ? WHERE user_id = 1`,
+		now.Add(24*time.Hour).Format(time.RFC3339),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p := schedule.DefaultParams()
+	p.ComfortableIntervalDays = 10
+	d.SetScheduleParams(p)
+	c, err := d.LibraryCounts(db.LearnerUserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.MatureCards < 1 {
+		t.Fatalf("want mature at threshold 10, got %+v", c)
+	}
+
+	p.ComfortableIntervalDays = 21
+	d.SetScheduleParams(p)
+	c, err = d.LibraryCounts(db.LearnerUserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.MatureCards != 0 {
+		t.Fatalf("interval 15 should not be mature at threshold 21: %+v", c)
 	}
 }

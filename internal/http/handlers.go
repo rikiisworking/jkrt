@@ -14,6 +14,7 @@ import (
 	"github.com/rikiisworking/jkrt/internal/db"
 	"github.com/rikiisworking/jkrt/internal/export"
 	"github.com/rikiisworking/jkrt/internal/review"
+	"github.com/rikiisworking/jkrt/internal/snapshot"
 )
 
 // handleScrape runs dual NHK RSS Scrape and returns per-source JSON
@@ -146,20 +147,15 @@ func (a *App) handleIndex(c *fiber.Ctx) error {
 	}
 
 	now := time.Now().UTC()
-	data := DashboardData{}
-	if a.Review != nil {
-		st, err := a.Review.Stats(db.LearnerUserID, now)
-		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
-		}
-		data.Stats = st
-	}
-	lib, err := a.DB.LibraryCounts(db.LearnerUserID)
+	view, err := snapshot.Load(a.Review, a.DB, db.LearnerUserID, now)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 	}
-	data.Library = lib
-	data.ArticleCount = lib.Articles
+	data := DashboardData{
+		Stats:        view.Queue,
+		Library:      view.Library,
+		ArticleCount: view.Library.Articles,
+	}
 	if fetched, ok, err := a.DB.LastArticleFetchedAt(); err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 	} else if ok {
@@ -175,22 +171,14 @@ func (a *App) handleStats(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "database not configured"})
 	}
 	now := time.Now().UTC()
-	var queue review.Stats
-	if a.Review != nil {
-		st, err := a.Review.Stats(db.LearnerUserID, now)
-		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
-		}
-		queue = st
-	}
-	lib, err := a.DB.LibraryCounts(db.LearnerUserID)
+	view, err := snapshot.Load(a.Review, a.DB, db.LearnerUserID, now)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 	}
 	return c.JSON(fiber.Map{
-		"queue":   queue,
-		"library": lib,
-		"as_of":   now.Format(time.RFC3339),
+		"queue":   view.Queue,
+		"library": view.Library,
+		"as_of":   view.AsOf.Format(time.RFC3339),
 	})
 }
 
@@ -205,19 +193,11 @@ func (a *App) handleExport(c *fiber.Ctx) error {
 	}
 
 	now := time.Now().UTC()
-	var queue review.Stats
-	if a.Review != nil {
-		st, err := a.Review.Stats(db.LearnerUserID, now)
-		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
-		}
-		queue = st
-	}
-	lib, err := a.DB.LibraryCounts(db.LearnerUserID)
+	view, err := snapshot.Load(a.Review, a.DB, db.LearnerUserID, now)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 	}
-	snap, err := a.Export.BuildSnapshot(db.LearnerUserID, queue, lib, now)
+	snap, err := a.Export.BuildSnapshot(db.LearnerUserID, view, now)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 	}

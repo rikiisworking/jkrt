@@ -66,9 +66,13 @@ func New(opts Options) *App {
 	})
 	f.Use(recover.New())
 
+	// Single schedule.Params source: prefer caller's Review; else defaults.
+	// Sync onto DB so extract NewCard and LibraryCounts mature threshold match Review.
 	params := schedule.DefaultParams()
+	if opts.Review != nil {
+		params = opts.Review.Params()
+	}
 	if opts.DB != nil {
-		// Keep extract NewCard defaults aligned with Review Apply/caps.
 		opts.DB.SetScheduleParams(params)
 	}
 	rev := opts.Review

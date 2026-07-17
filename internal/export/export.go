@@ -11,6 +11,7 @@ import (
 
 	"github.com/rikiisworking/jkrt/internal/db"
 	"github.com/rikiisworking/jkrt/internal/review"
+	"github.com/rikiisworking/jkrt/internal/snapshot"
 )
 
 // Format is the wire export format.
@@ -85,11 +86,16 @@ func New(d *db.DB) *Service {
 	return &Service{sql: sqlDB}
 }
 
-// BuildSnapshot loads cards + reviews for the Learner (capped).
-func (s *Service) BuildSnapshot(userID int64, queue review.Stats, lib db.LibraryCounts, now time.Time) (Snapshot, error) {
+// BuildSnapshot loads cards + reviews for the Learner (capped), using a preloaded
+// queue+library View from snapshot.Load (single composition seam).
+func (s *Service) BuildSnapshot(userID int64, view snapshot.View, now time.Time) (Snapshot, error) {
 	if s == nil || s.sql == nil {
 		return Snapshot{}, fmt.Errorf("export service not configured")
 	}
+	if now.IsZero() {
+		now = view.AsOf
+	}
+	now = now.UTC()
 	cards, cTrunc, err := s.loadCards(userID, db.MaxExportCards)
 	if err != nil {
 		return Snapshot{}, err
@@ -105,10 +111,10 @@ func (s *Service) BuildSnapshot(userID int64, queue review.Stats, lib db.Library
 		reviews = []ReviewRow{}
 	}
 	return Snapshot{
-		ExportedAt: now.UTC().Format(time.RFC3339),
+		ExportedAt: now.Format(time.RFC3339),
 		UserID:     userID,
-		Queue:      queue,
-		Library:    lib,
+		Queue:      view.Queue,
+		Library:    view.Library,
 		Cards:      cards,
 		Reviews:    reviews,
 		Truncated:  cTrunc || rTrunc,
