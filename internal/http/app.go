@@ -13,6 +13,7 @@ import (
 	"github.com/rikiisworking/jkrt/internal/config"
 	"github.com/rikiisworking/jkrt/internal/db"
 	"github.com/rikiisworking/jkrt/internal/export"
+	"github.com/rikiisworking/jkrt/internal/jlpt"
 	"github.com/rikiisworking/jkrt/internal/review"
 	"github.com/rikiisworking/jkrt/internal/schedule"
 	"github.com/rikiisworking/jkrt/internal/scrape"
@@ -74,6 +75,16 @@ func New(opts Options) *App {
 	}
 	if opts.DB != nil {
 		opts.DB.SetScheduleParams(params)
+		// Production N2+ filter (tests call AllowAllWords after Open).
+		// Skip if test already set AllowAllWords (wordEligible non-nil) — SetJLPT clears it.
+		// Only wire when not bypassed: check by re-applying only for production path.
+		// Tests that use AllowAllWords must call it *after* New — so wire JLPT first here,
+		// then test helpers call AllowAllWords after New if needed.
+		// Actually newTestAppOpts calls AllowAllWords before New — SetJLPT would wipe it.
+		// So: only SetJLPT when wordEligible is nil (default production).
+		// AllowAllWords sets wordEligible; we skip SetJLPT if already set.
+		// open path: Open → (tests AllowAllWords) → New. If AllowAllWords first, skip SetJLPT.
+		wireJLPT(opts.DB, opts.Config)
 	}
 	rev := opts.Review
 	if rev == nil && opts.DB != nil {
@@ -123,13 +134,46 @@ func (a *App) routes() {
 	protected.Post("/articles/:id/sentences/:sid/extract", a.handleSentenceExtract)
 }
 
+// wireJLPT installs N2+ extract filter + optional headless classifier.
+// No-op when DB already has AllowAllWords (tests).
+func wireJLPT(d *db.DB, cfg config.Config) {
+	if d == nil || d.HasWordEligibleOverride() {
+		return
+	}
+	opt := jlpt.ResolveOptions{
+		Cache:       &jlpt.SQLCache{SQL: d.SQL()},
+		MaxClassify: cfg.JLPTClassifyMaxPerExt,
+	}
+	if cfg.JLPTClassifyMaxPerExt == 0 {
+		opt.MaxClassify = 10
+	}
+	use := false
+	switch cfg.JLPTClassify {
+	case "on":
+		use = true
+	case "auto", "":
+		use = jlpt.LookPath("grok")
+	case "off":
+		use = false
+	default:
+		use = jlpt.LookPath("grok")
+	}
+	if use {
+		opt.Classifier = jlpt.NewHeadless(jlpt.HeadlessConfig{
+			Model:   cfg.JLPTClassifyModel,
+			Timeout: cfg.JLPTClassifyTimeout,
+		})
+	}
+	d.SetJLPT(opt)
+}
+
 // newScraper builds a Scraper from app deps (all DefaultSources; scrape is always multi-feed).
 func (a *App) newScraper() *scrape.Scraper {
 	var client scrape.HTTPDoer = a.HTTPClient
 	if client == nil {
 		client = &http.Client{Timeout: scrape.DefaultTimeout}
 	}
-	sources := scrape.DefaultSources(a.Config.NHKMainRSSURL, a.Config.NHKEasyRSSURL)
+	sources := scrape.DefaultSources(a.Config.NHKMainRSSURL)
 	return scrape.New(a.DB, sources, client)
 }
 

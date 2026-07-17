@@ -2,6 +2,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rikiisworking/jkrt/internal/jlpt"
 	"github.com/rikiisworking/jkrt/internal/schedule"
 
 	_ "modernc.org/sqlite"
@@ -21,6 +23,10 @@ type DB struct {
 	// cardParams seeds new Cards via schedule.NewCard. Nil → DefaultParams().
 	// Set with SetScheduleParams so extract and Review share one config.
 	cardParams *schedule.Params
+	// jlptOpt controls N2+ filter at Sentence extract. Nil → embed map only (unlisted skip).
+	jlptOpt *jlpt.ResolveOptions
+	// wordEligible overrides JLPT filter when non-nil (tests: allow all candidates).
+	wordEligible func(lemma, reading string) bool
 }
 
 // Open opens (or creates) SQLite at dbPath and applies *.sql files from migrationsDir
@@ -70,6 +76,47 @@ func (d *DB) scheduleParams() schedule.Params {
 		return *d.cardParams
 	}
 	return schedule.DefaultParams()
+}
+
+// SetJLPT configures N2+ Word filter at extract (embed map + optional classifier/cache).
+func (d *DB) SetJLPT(opt jlpt.ResolveOptions) {
+	if d == nil {
+		return
+	}
+	cp := opt
+	d.jlptOpt = &cp
+	d.wordEligible = nil
+}
+
+// AllowAllWords disables JLPT filtering (tests that need every kanji candidate as a Card).
+func (d *DB) AllowAllWords() {
+	if d == nil {
+		return
+	}
+	d.wordEligible = func(lemma, reading string) bool { return true }
+	d.jlptOpt = nil
+}
+
+// HasWordEligibleOverride reports whether tests called AllowAllWords (or custom filter).
+func (d *DB) HasWordEligibleOverride() bool {
+	return d != nil && d.wordEligible != nil
+}
+
+// wordIsEligible reports whether a Word candidate should create sentence_words + Card.
+func (d *DB) wordIsEligible(ctx context.Context, lemma, reading string, classifyUsed *int) (bool, error) {
+	if d != nil && d.wordEligible != nil {
+		return d.wordEligible(lemma, reading), nil
+	}
+	opt := jlpt.ResolveOptions{}
+	if d != nil && d.jlptOpt != nil {
+		opt = *d.jlptOpt
+	}
+	opt.ClassifyUsed = classifyUsed
+	res, err := jlpt.Resolve(ctx, lemma, reading, opt)
+	if err != nil {
+		return false, err
+	}
+	return res.Eligible, nil
 }
 
 // SQL returns the underlying *sql.DB.

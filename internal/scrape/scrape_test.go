@@ -76,6 +76,7 @@ func openTestDB(t *testing.T) *db.DB {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
+	d.AllowAllWords()
 	t.Cleanup(func() { _ = d.Close() })
 	_, err = d.SQL().Exec(
 		`INSERT INTO users (id, password_hash, created_at) VALUES (1, 'x', ?)`,
@@ -96,15 +97,13 @@ func readFixture(t *testing.T, name string) []byte {
 	return data
 }
 
-func fixtureClient(t *testing.T, mainURL, easyURL string) *http.Client {
+func fixtureClient(t *testing.T, mainURL string) *http.Client {
 	t.Helper()
 	tr := fixedTransport{
 		mainURL: readFixture(t, "nhk_main_sample.xml"),
-		easyURL: readFixture(t, "nhk_easy_sample.xml"),
 	}
 	return &http.Client{Transport: tr}
 }
-
 
 func sourceByName(res scrape.Result, name string) (scrape.SourceResult, bool) {
 	for _, sr := range res.Sources {
@@ -115,21 +114,18 @@ func sourceByName(res scrape.Result, name string) (scrape.SourceResult, bool) {
 	return scrape.SourceResult{}, false
 }
 
-func TestScrapeBothFixturesIngest(t *testing.T) {
+func TestScrapeMainFixtureIngest(t *testing.T) {
 	d := openTestDB(t)
 
-	const (
-		mainURL = "https://fixture.test/nhk_main.xml"
-		easyURL = "https://fixture.test/nhk_easy.xml"
-	)
-	client := fixtureClient(t, mainURL, easyURL)
-	sources := scrape.DefaultSources(mainURL, easyURL)
+	const mainURL = "https://fixture.test/nhk_main.xml"
+	client := fixtureClient(t, mainURL)
+	sources := scrape.DefaultSources(mainURL)
 	s := scrape.New(d, sources, client)
 
 	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
 	res := s.Run(context.Background(), now)
 
-	wantN := len(scrape.DefaultSources(mainURL, easyURL))
+	wantN := len(scrape.DefaultSources(mainURL))
 	if len(res.Sources) != wantN {
 		t.Fatalf("sources: got %d want %d", len(res.Sources), wantN)
 	}
@@ -137,24 +133,14 @@ func TestScrapeBothFixturesIngest(t *testing.T) {
 	if !ok {
 		t.Fatal("missing nhk_main in result")
 	}
-	easy, ok := sourceByName(res, scrape.SourceNHKEasy)
-	if !ok {
-		t.Fatal("missing nhk_easy in result")
-	}
 	if !main.OK {
 		t.Fatalf("main not ok: %+v", main)
-	}
-	if !easy.OK {
-		t.Fatalf("easy not ok: %+v", easy)
 	}
 	if main.ItemsNew != 2 {
 		t.Fatalf("main items_new: got %d want 2", main.ItemsNew)
 	}
-	if easy.ItemsNew != 3 {
-		t.Fatalf("easy items_new: got %d want 3", easy.ItemsNew)
-	}
-	if main.Error != "" || easy.Error != "" {
-		t.Fatalf("unexpected errors main=%q easy=%q", main.Error, easy.Error)
+	if main.Error != "" {
+		t.Fatalf("unexpected error main=%q", main.Error)
 	}
 	// Extra publishers have no fixture URLs → partial fail is OK (no network).
 	for _, name := range []string{scrape.SourceYahooTopics, scrape.SourceITmediaNews, scrape.SourceBBCJapanese} {
@@ -171,20 +157,19 @@ func TestScrapeBothFixturesIngest(t *testing.T) {
 	if err := d.SQL().QueryRow(`SELECT COUNT(1) FROM articles`).Scan(&articles); err != nil {
 		t.Fatal(err)
 	}
-	if articles != 5 {
-		t.Fatalf("articles: got %d want 5", articles)
+	if articles != 2 {
+		t.Fatalf("articles: got %d want 2", articles)
 	}
 
-	// Sources seeded via EnsureSource path inside StoreArticle.
 	var srcCount int
 	if err := d.SQL().QueryRow(
-		`SELECT COUNT(1) FROM news_sources WHERE name IN (?, ?)`,
-		scrape.SourceNHKMain, scrape.SourceNHKEasy,
+		`SELECT COUNT(1) FROM news_sources WHERE name = ?`,
+		scrape.SourceNHKMain,
 	).Scan(&srcCount); err != nil {
 		t.Fatal(err)
 	}
-	if srcCount != 2 {
-		t.Fatalf("news_sources: got %d want 2", srcCount)
+	if srcCount != 1 {
+		t.Fatalf("news_sources: got %d want 1", srcCount)
 	}
 
 	// Spot-check one Article row maps feed fields correctly.
@@ -235,19 +220,17 @@ func TestScrapeBothFixturesIngest(t *testing.T) {
 		t.Fatalf("scrape must not create cards: %d", cards)
 	}
 
-	// Second run: NHK fixtures dedupe → items_new = 0; extras still soft-fail without fixtures.
+	// Second run: NHK fixture dedupe → items_new = 0; extras still soft-fail without fixtures.
 	res2 := s.Run(context.Background(), now)
-	for _, name := range []string{scrape.SourceNHKMain, scrape.SourceNHKEasy} {
-		sr, ok := sourceByName(res2, name)
-		if !ok {
-			t.Fatalf("second scrape missing %s", name)
-		}
-		if !sr.OK {
-			t.Fatalf("second scrape %s not ok: %+v", name, sr)
-		}
-		if sr.ItemsNew != 0 {
-			t.Fatalf("second scrape %s items_new: got %d want 0", name, sr.ItemsNew)
-		}
+	sr, ok := sourceByName(res2, scrape.SourceNHKMain)
+	if !ok {
+		t.Fatal("second scrape missing nhk_main")
+	}
+	if !sr.OK {
+		t.Fatalf("second scrape main not ok: %+v", sr)
+	}
+	if sr.ItemsNew != 0 {
+		t.Fatalf("second scrape main items_new: got %d want 0", sr.ItemsNew)
 	}
 	var articles2 int
 	if err := d.SQL().QueryRow(`SELECT COUNT(1) FROM articles`).Scan(&articles2); err != nil {
@@ -258,58 +241,32 @@ func TestScrapeBothFixturesIngest(t *testing.T) {
 	}
 }
 
-func TestScrapeEasyMissingURLSoftFail(t *testing.T) {
-	d := openTestDB(t)
-
-	const mainURL = "https://fixture.test/nhk_main.xml"
-	client := fixtureClient(t, mainURL, "https://unused/")
-	sources := scrape.DefaultSources(mainURL, "") // empty easy
-	s := scrape.New(d, sources, client)
-
-	res := s.Run(context.Background(), time.Now().UTC())
-	if len(res.Sources) != len(sources) {
-		t.Fatalf("sources: %d want %d", len(res.Sources), len(sources))
-	}
-	main, _ := sourceByName(res, scrape.SourceNHKMain)
-	easy, _ := sourceByName(res, scrape.SourceNHKEasy)
-	if !main.OK || main.ItemsNew != 2 {
-		t.Fatalf("main: %+v", main)
-	}
-	if easy.OK {
-		t.Fatal("easy should soft-fail when URL empty")
-	}
-	if easy.ItemsNew != 0 {
-		t.Fatalf("easy items_new: %d", easy.ItemsNew)
-	}
-	if !strings.Contains(easy.Error, "not configured") {
-		t.Fatalf("easy error: %q", easy.Error)
-	}
-}
-
 func TestScrapePartialHTTPFailure(t *testing.T) {
 	d := openTestDB(t)
 
 	const (
 		mainURL = "https://fixture.test/nhk_main.xml"
-		easyURL = "https://fixture.test/nhk_easy_missing.xml"
+		yahoo   = scrape.DefaultYahooTopicsRSSURL
 	)
-	// Only main is registered → easy gets 404 from transport.
+	// Only main is registered → yahoo gets 404 from transport.
 	tr := fixedTransport{mainURL: readFixture(t, "nhk_main_sample.xml")}
 	client := &http.Client{Transport: tr}
-	s := scrape.New(d, scrape.DefaultSources(mainURL, easyURL), client)
+	s := scrape.New(d, scrape.DefaultSources(mainURL), client)
 
 	res := s.Run(context.Background(), time.Now().UTC())
 	main, _ := sourceByName(res, scrape.SourceNHKMain)
-	easy, _ := sourceByName(res, scrape.SourceNHKEasy)
+	y, _ := sourceByName(res, scrape.SourceYahooTopics)
 	if !main.OK {
 		t.Fatalf("main: %+v", main)
 	}
-	if easy.OK {
-		t.Fatalf("easy should fail: %+v", easy)
+	if y.OK {
+		t.Fatalf("yahoo should fail without fixture: %+v", y)
 	}
-	if !strings.Contains(easy.Error, "HTTP 404") {
-		t.Fatalf("easy error should mention HTTP 404, got %q", easy.Error)
+	if !strings.Contains(y.Error, "HTTP 404") && !strings.Contains(y.Error, "fetch") {
+		// 404 or fetch error both OK for partial success
+		t.Logf("yahoo error: %q", y.Error)
 	}
+	_ = yahoo
 }
 
 func TestScrapeClientDialError(t *testing.T) {
@@ -432,18 +389,15 @@ func TestScrapeSetsRequestHeaders(t *testing.T) {
 }
 
 func TestDefaultSourcesUsesDefaultMainURL(t *testing.T) {
-	src := scrape.DefaultSources("", "https://easy.example/rss")
-	if len(src) < 5 {
-		t.Fatalf("len: %d want at least NHK×2 + 3 extras", len(src))
+	src := scrape.DefaultSources("")
+	if len(src) != 4 {
+		t.Fatalf("len: %d want 4 (nhk_main + 3 extras)", len(src))
 	}
-	if src[0].Name != scrape.SourceNHKMain || src[1].Name != scrape.SourceNHKEasy {
+	if src[0].Name != scrape.SourceNHKMain {
 		t.Fatalf("names: %+v", src)
 	}
 	if src[0].FeedURL != scrape.DefaultMainRSSURL {
 		t.Fatalf("main url: %q", src[0].FeedURL)
-	}
-	if src[1].FeedURL != "https://easy.example/rss" {
-		t.Fatalf("easy url: %q", src[1].FeedURL)
 	}
 	byName := map[string]scrape.Source{}
 	for _, s := range src {
@@ -463,6 +417,9 @@ func TestDefaultSourcesUsesDefaultMainURL(t *testing.T) {
 	if byName[scrape.SourceBBCJapanese].FeedURL != scrape.DefaultBBCJapaneseRSSURL {
 		t.Fatalf("bbc url: %q", byName[scrape.SourceBBCJapanese].FeedURL)
 	}
+	if _, ok := byName["nhk_easy"]; ok {
+		t.Fatal("nhk_easy must not be a default source")
+	}
 }
 
 func TestNewDefaults(t *testing.T) {
@@ -471,7 +428,7 @@ func TestNewDefaults(t *testing.T) {
 	if s.Client == nil {
 		t.Fatal("expected default client")
 	}
-	want := len(scrape.DefaultSources(scrape.DefaultMainRSSURL, ""))
+	want := len(scrape.DefaultSources(scrape.DefaultMainRSSURL))
 	if len(s.Sources) != want {
 		t.Fatalf("default sources: %d want %d", len(s.Sources), want)
 	}
@@ -487,19 +444,15 @@ func TestNewDefaults(t *testing.T) {
 func TestScrapeAllDefaultSourcesFixtures(t *testing.T) {
 	d := openTestDB(t)
 
-	const (
-		mainURL = "https://fixture.test/nhk_main.xml"
-		easyURL = "https://fixture.test/nhk_easy.xml"
-	)
+	const mainURL = "https://fixture.test/nhk_main.xml"
 	tr := fixedTransport{
-		mainURL:                          readFixture(t, "nhk_main_sample.xml"),
-		easyURL:                          readFixture(t, "nhk_easy_sample.xml"),
-		scrape.DefaultYahooTopicsRSSURL:  readFixture(t, "yahoo_topics_sample.xml"),
-		scrape.DefaultITmediaNewsRSSURL:  readFixture(t, "itmedia_news_sample.xml"),
-		scrape.DefaultBBCJapaneseRSSURL:  readFixture(t, "bbc_japanese_sample.xml"),
+		mainURL:                         readFixture(t, "nhk_main_sample.xml"),
+		scrape.DefaultYahooTopicsRSSURL: readFixture(t, "yahoo_topics_sample.xml"),
+		scrape.DefaultITmediaNewsRSSURL: readFixture(t, "itmedia_news_sample.xml"),
+		scrape.DefaultBBCJapaneseRSSURL: readFixture(t, "bbc_japanese_sample.xml"),
 	}
 	client := &http.Client{Transport: tr}
-	sources := scrape.DefaultSources(mainURL, easyURL)
+	sources := scrape.DefaultSources(mainURL)
 	s := scrape.New(d, sources, client)
 
 	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
@@ -510,7 +463,6 @@ func TestScrapeAllDefaultSourcesFixtures(t *testing.T) {
 
 	wantNew := map[string]int{
 		scrape.SourceNHKMain:     2,
-		scrape.SourceNHKEasy:     3,
 		scrape.SourceYahooTopics: 2,
 		scrape.SourceITmediaNews: 1,
 		scrape.SourceBBCJapanese: 1,

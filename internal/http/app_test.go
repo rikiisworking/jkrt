@@ -38,6 +38,7 @@ func TestAppNewSyncsReviewParamsToDB(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	database.AllowAllWords()
 	t.Cleanup(func() { _ = database.Close() })
 	if err := auth.EnsureLearnerRow(auth.NewStore(database.SQL())); err != nil {
 		t.Fatal(err)
@@ -163,13 +164,14 @@ func newTestAppOpts(t *testing.T, authOn bool, staticDir string, httpClient scra
 		SessionSecret: []byte("0123456789abcdef0123456789abcdef"),
 		SessionTTL:    time.Hour,
 		NHKMainRSSURL: "https://fixture.test/nhk_main.xml",
-		NHKEasyRSSURL: "https://fixture.test/nhk_easy.xml",
 	}
 
 	database, err := db.Open(dbPath, filepath.Join("..", "..", "migrations"))
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
+	// HTTP tests that need a full review queue bypass N2+ filter unless they call SetJLPT.
+	database.AllowAllWords()
 	t.Cleanup(func() { _ = database.Close() })
 
 	ana, err := analyze.New()
@@ -791,10 +793,6 @@ func loadRSSFixtures(t *testing.T) fixtureHTTPClient {
 	if err != nil {
 		t.Fatal(err)
 	}
-	easy, err := os.ReadFile(filepath.Join("..", "..", "testdata", "rss", "nhk_easy_sample.xml"))
-	if err != nil {
-		t.Fatal(err)
-	}
 	// Offline multi-publisher fixtures (same shapes as production defaults).
 	yahoo, err := os.ReadFile(filepath.Join("..", "..", "testdata", "rss", "yahoo_topics_sample.xml"))
 	if err != nil {
@@ -810,7 +808,6 @@ func loadRSSFixtures(t *testing.T) fixtureHTTPClient {
 	}
 	return fixtureHTTPClient{
 		"https://fixture.test/nhk_main.xml": main,
-		"https://fixture.test/nhk_easy.xml": easy,
 		scrape.DefaultYahooTopicsRSSURL:    yahoo,
 		scrape.DefaultITmediaNewsRSSURL:    itmedia,
 		scrape.DefaultBBCJapaneseRSSURL:    bbc,
@@ -851,7 +848,7 @@ func TestScrapeAuthOffIngestsFixtures(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	wantN := len(scrape.DefaultSources("https://fixture.test/nhk_main.xml", "https://fixture.test/nhk_easy.xml"))
+	wantN := len(scrape.DefaultSources("https://fixture.test/nhk_main.xml"))
 	if len(result.Sources) != wantN {
 		t.Fatalf("sources: got %d want %d %+v", len(result.Sources), wantN, result.Sources)
 	}
@@ -863,19 +860,15 @@ func TestScrapeAuthOffIngestsFixtures(t *testing.T) {
 			t.Fatalf("source %s not ok: %+v", sr.Name, sr)
 		}
 	}
+	if _, ok := byName["nhk_easy"]; ok {
+		t.Fatal("nhk_easy must not appear in scrape results")
+	}
 	main, ok := byName[scrape.SourceNHKMain]
 	if !ok {
 		t.Fatal("missing nhk_main")
 	}
-	easy, ok := byName[scrape.SourceNHKEasy]
-	if !ok {
-		t.Fatal("missing nhk_easy")
-	}
 	if main.ItemsNew != 2 {
 		t.Fatalf("main items_new: %d", main.ItemsNew)
-	}
-	if easy.ItemsNew != 3 {
-		t.Fatalf("easy items_new: %d", easy.ItemsNew)
 	}
 
 	// Dedupe on second scrape
@@ -920,7 +913,7 @@ func TestScrapeWithAuthCookie(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	wantN := len(scrape.DefaultSources("https://fixture.test/nhk_main.xml", "https://fixture.test/nhk_easy.xml"))
+	wantN := len(scrape.DefaultSources("https://fixture.test/nhk_main.xml"))
 	if len(result.Sources) != wantN {
 		t.Fatalf("sources: got %d want %d %+v", len(result.Sources), wantN, result.Sources)
 	}
@@ -932,19 +925,19 @@ func TestScrapeWithAuthCookie(t *testing.T) {
 }
 
 func TestScrapePartialSuccessJSON(t *testing.T) {
-	// Easy URL empty → 200 with ok=false on easy, main still ok (plan partial success).
+	// Only main fixture registered → 200 with ok=false on extras (partial success).
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	cfg := config.Config{
 		Addr:          ":0",
 		DBPath:        dbPath,
 		AuthEnabled:   false,
 		NHKMainRSSURL: "https://fixture.test/nhk_main.xml",
-		NHKEasyRSSURL: "", // soft-fail
 	}
 	database, err := db.Open(dbPath, filepath.Join("..", "..", "migrations"))
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
+	database.AllowAllWords()
 	t.Cleanup(func() { _ = database.Close() })
 	if err := auth.EnsureLearnerRow(auth.NewStore(database.SQL())); err != nil {
 		t.Fatal(err)
@@ -987,25 +980,23 @@ func TestScrapePartialSuccessJSON(t *testing.T) {
 	if len(result.Sources) < 2 {
 		t.Fatalf("sources: %s", raw)
 	}
-	var main, easy scrape.SourceResult
+	var main scrape.SourceResult
+	var failed int
 	for _, sr := range result.Sources {
-		switch sr.Name {
-		case scrape.SourceNHKMain:
+		if sr.Name == scrape.SourceNHKMain {
 			main = sr
-		case scrape.SourceNHKEasy:
-			easy = sr
+			continue
+		}
+		if !sr.OK {
+			failed++
 		}
 	}
 	if !main.OK || main.ItemsNew != 2 {
 		t.Fatalf("main: %+v", main)
 	}
-	if easy.OK {
-		t.Fatalf("easy should soft-fail: %+v", easy)
+	if failed == 0 {
+		t.Fatal("expected at least one soft-failed extra source")
 	}
-	if easy.Error == "" {
-		t.Fatal("easy needs error field")
-	}
-	// Extra publishers have no fixture → not ok (partial success still HTTP 200).
 	// Ensure wire JSON includes "error" for failed source.
 	if !strings.Contains(string(raw), `"error"`) {
 		t.Fatalf("expected error key in JSON: %s", raw)
@@ -1048,6 +1039,7 @@ func TestScrapeOKWithoutAnalyzer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	database.AllowAllWords()
 	t.Cleanup(func() { _ = database.Close() })
 	if err := auth.EnsureLearnerRow(auth.NewStore(database.SQL())); err != nil {
 		t.Fatal(err)
@@ -1056,7 +1048,6 @@ func TestScrapeOKWithoutAnalyzer(t *testing.T) {
 		Config: config.Config{
 			AuthEnabled:   false,
 			NHKMainRSSURL: "https://fixture.test/nhk_main.xml",
-			NHKEasyRSSURL: "https://fixture.test/nhk_easy.xml",
 		},
 		DB:         database,
 		Analyzer:   nil,
@@ -1103,8 +1094,8 @@ func TestReviewEmptyQueue(t *testing.T) {
 	if !strings.Contains(s, "Queue empty") {
 		t.Fatalf("expected empty queue HTML, body=%s", body)
 	}
-	if !strings.Contains(s, "Add to review") && !strings.Contains(s, "Articles") {
-		t.Fatalf("empty queue should guide to Articles / extract, body=%s", s)
+	if !strings.Contains(s, "Articles") {
+		t.Fatalf("empty queue should guide to Articles, body=%s", s)
 	}
 }
 
@@ -1145,6 +1136,12 @@ func TestReviewCardAndGrade(t *testing.T) {
 	if !strings.Contains(s, `name="card_id"`) || !strings.Contains(s, `name="grade"`) {
 		t.Fatalf("expected grade form, body=%s", s)
 	}
+	// Grade is a hidden input (not submit-button name/value) so busy UI cannot strip it.
+	if !strings.Contains(s, `name="grade" value=""`) && !strings.Contains(s, `name="grade" value=''`) {
+		if !strings.Contains(s, `data-review-grade-input`) {
+			t.Fatalf("expected hidden grade input contract, body=%s", s)
+		}
+	}
 	if !strings.Contains(s, `name="card_updated_at"`) {
 		t.Fatalf("expected card_updated_at lock token, body=%s", s)
 	}
@@ -1165,11 +1162,15 @@ func TestReviewCardAndGrade(t *testing.T) {
 	if !strings.Contains(s, "経済") {
 		t.Fatalf("expected Japanese sentence content")
 	}
-	// All four grade buttons
+	// All four grade buttons via data-grade (not button name=grade)
 	for _, g := range []string{"again", "hard", "good", "easy"} {
-		if !strings.Contains(s, `value="`+g+`"`) {
+		if !strings.Contains(s, `data-grade="`+g+`"`) {
 			t.Fatalf("missing grade button %s", g)
 		}
+	}
+	// Freeze fix: do not capture-disable submit buttons that would strip grade.
+	if strings.Contains(s, "buttons[i].disabled = true") {
+		t.Fatal("must not disable grade submit buttons (strips grade from form data)")
 	}
 
 	cardID := formHiddenValue(t, s, "card_id")
@@ -1497,7 +1498,7 @@ func TestDashboardEmpty(t *testing.T) {
 		"Japanese Kanji Reading Trainer",
 		"Due",
 		"Session progress",
-		"Scrape NHK",
+		"Scrape",
 		"No articles yet",
 		`hx-post="/api/scrape"`,
 		`href="/articles"`,
@@ -1674,12 +1675,15 @@ func TestScrapeHTMXReturnsHTML(t *testing.T) {
 	}
 	// Multi-source summary should name each built-in source.
 	for _, name := range []string{
-		scrape.SourceNHKMain, scrape.SourceNHKEasy,
+		scrape.SourceNHKMain,
 		scrape.SourceYahooTopics, scrape.SourceITmediaNews, scrape.SourceBBCJapanese,
 	} {
 		if !strings.Contains(s, name) {
 			t.Fatalf("HTMX scrape summary missing %q, body=%s", name, s)
 		}
+	}
+	if strings.Contains(s, "nhk_easy") {
+		t.Fatal("HTMX scrape summary must not include nhk_easy")
 	}
 }
 
@@ -2068,7 +2072,7 @@ func TestExtractWithAuthAndHTMX(t *testing.T) {
 
 	cookie := loginCookie(t, app)
 
-	// Unextracted detail shows Add to review
+	// Unextracted detail: whole sentence row is HTMX extract target (no button label).
 	dreq := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/articles/%d", store.ArticleID), nil)
 	dreq.AddCookie(&http.Cookie{Name: auth.CookieName, Value: cookie})
 	dresp, err := app.Fiber.Test(dreq)
@@ -2077,10 +2081,15 @@ func TestExtractWithAuthAndHTMX(t *testing.T) {
 	}
 	defer dresp.Body.Close()
 	dbody, _ := io.ReadAll(dresp.Body)
-	if !strings.Contains(string(dbody), "Add to review") {
-		t.Fatalf("expected Add to review, body=%s", dbody)
+	ds := string(dbody)
+	if strings.Contains(ds, "Add to review") {
+		t.Fatal("must not show Add to review button")
 	}
-	if strings.Contains(string(dbody), "In queue") {
+	wantHX := fmt.Sprintf(`hx-post="/articles/%d/sentences/%d/extract"`, store.ArticleID, sid)
+	if !strings.Contains(ds, wantHX) {
+		t.Fatalf("expected tap-to-extract hx-post, body=%s", ds)
+	}
+	if strings.Contains(ds, "In queue") {
 		t.Fatal("must not show In queue before extract")
 	}
 
@@ -2110,6 +2119,9 @@ func TestExtractWithAuthAndHTMX(t *testing.T) {
 	}
 	if strings.Contains(es, "Add to review") {
 		t.Fatal("must not show Add to review after extract")
+	}
+	if strings.Contains(es, "hx-post") {
+		t.Fatal("extracted row must not remain tappable for re-extract")
 	}
 
 	var cards1 int

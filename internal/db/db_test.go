@@ -185,6 +185,8 @@ func openTestDB(t *testing.T) *db.DB {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
+	// Schedule/review tests need every kanji candidate as a Card; production uses N2+ filter.
+	d.AllowAllWords()
 	t.Cleanup(func() { _ = d.Close() })
 	return d
 }

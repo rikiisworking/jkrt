@@ -170,7 +170,7 @@ func dashboardHTML(d DashboardData) string {
           class="inline-flex items-center justify-center rounded-xl border border-slate-300 bg-white px-5 py-3 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 active:scale-[0.98]"
           hx-post="/api/scrape" hx-target="#scrape-result" hx-swap="innerHTML"
           hx-disabled-elt="this">
-          Scrape NHK
+          Scrape
         </button>
       </div>
       <div id="scrape-result" class="mt-3" aria-live="polite"></div>
@@ -233,7 +233,7 @@ func dashboardEmptyHint(d DashboardData) string {
 	return `
       <div class="mt-6 rounded-xl border border-dashed border-slate-300 bg-white/60 p-5 text-center">
         <p class="text-sm font-medium text-slate-700">No articles yet</p>
-        <p class="mt-1 text-xs text-slate-500">Tap <strong>Scrape NHK</strong> to pull RSS into the library, then open <strong>Articles</strong> and add sentences to review.</p>
+        <p class="mt-1 text-xs text-slate-500">Tap <strong>Scrape</strong> to pull RSS into the library, then open <strong>Articles</strong> and add sentences to review.</p>
       </div>`
 }
 
@@ -288,7 +288,7 @@ func articlesListHTML(items []db.ArticleListItem) string {
 		body.WriteString(`
       <div class="mt-8 rounded-xl border border-dashed border-slate-300 bg-white p-8 text-center shadow-sm">
         <p class="text-lg font-medium text-slate-800">No articles</p>
-        <p class="mt-2 text-sm text-slate-500">Scrape NHK feeds from the home dashboard first.</p>
+        <p class="mt-2 text-sm text-slate-500">Scrape news feeds from the home dashboard first.</p>
         <a href="/" class="mt-6 inline-block rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white hover:bg-blue-600">Home</a>
       </div>`)
 		return pageShell("Articles — JKRT", "articles", "", body.String())
@@ -336,7 +336,7 @@ func articleDetailHTML(art db.ArticleDetail, sents []db.SentenceListItem) string
         <span>%s</span>
         <span>%s</span>
       </p>
-      <p class="mt-3 text-sm text-slate-600">Tap <strong>Add to review</strong> on a sentence to create Cards for its kanji words. Scrape alone does not fill the queue.</p>`,
+      <p class="mt-3 text-sm text-slate-600">Tap a sentence to add its study words to review. Scrape alone does not fill the queue.</p>`,
 		html.EscapeString(title),
 		html.EscapeString(art.SourceName),
 		html.EscapeString(formatFetchedDisplay(art.FetchedAt)),
@@ -403,27 +403,22 @@ func sentenceRowHTML(articleID int64, s db.SentenceListItem, last db.ExtractResu
 		)
 	}
 
+	// Unextracted: whole card is the hit target (tap/click/Enter). No separate button.
 	return fmt.Sprintf(`
-      <li id="%s" class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-        <p class="text-xs text-slate-400">Sentence</p>
+      <li id="%s" role="button" tabindex="0"
+        class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm cursor-pointer hover:border-blue-300 active:border-blue-400 transition-colors"
+        hx-post="/articles/%d/sentences/%d/extract"
+        hx-trigger="click, keyup[key=='Enter']"
+        hx-target="this" hx-swap="outerHTML"
+        hx-disabled-elt="this">
+        <p class="text-xs text-slate-400">Sentence · tap to add</p>
         <p class="mt-1 text-base leading-relaxed text-slate-900" lang="ja">%s</p>
         %s
-        <form method="post" action="/articles/%d/sentences/%d/extract"
-          hx-post="/articles/%d/sentences/%d/extract"
-          hx-target="#%s" hx-swap="outerHTML"
-          class="mt-3">
-          <button type="submit"
-            class="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-white shadow hover:bg-blue-600 active:scale-[0.98]">
-            Add to review
-          </button>
-        </form>
       </li>`,
 		idAttr,
+		articleID, s.ID,
 		html.EscapeString(s.Text),
 		meta,
-		articleID, s.ID,
-		articleID, s.ID,
-		idAttr,
 	)
 }
 
@@ -438,6 +433,9 @@ func articleNotFoundHTML() string {
 
 // --- Review (Phase 3 shell + partials) ---
 
+// reviewFuriScript: furigana toggle + review grade form helpers.
+// Grade lives in a hidden input (not submit-button name/value) so busy-state
+// never strips grade from the HTMX body (disabled controls are omitted by browsers).
 const reviewFuriScript = `
   <script>
     (function () {
@@ -447,20 +445,68 @@ const reviewFuriScript = `
         var el = document.getElementById('furi-toggle');
         if (el) el.checked = on;
       }
+      function setFormBusy(form, busy) {
+        if (!form) return;
+        form.setAttribute('aria-busy', busy ? 'true' : 'false');
+        if (busy) {
+          form.classList.add('pointer-events-none', 'opacity-60');
+        } else {
+          form.classList.remove('pointer-events-none', 'opacity-60');
+        }
+      }
       document.addEventListener('DOMContentLoaded', applyFuri);
       document.addEventListener('htmx:afterSwap', applyFuri);
       window.jkrtToggleFuri = function (checked) {
         sessionStorage.setItem('jkrt-furi', checked ? '1' : '0');
         document.body.classList.toggle('show-furi', checked);
       };
+      // Copy grade into hidden field from the submitter (click or keyboard).
+      // Never disable grade-carrying controls — browsers omit disabled fields.
+      document.addEventListener('click', function (e) {
+        var btn = e.target && e.target.closest ? e.target.closest('button[data-grade]') : null;
+        if (!btn) return;
+        var form = btn.form || (btn.closest && btn.closest('form'));
+        if (!form || form.getAttribute('data-review-grade') !== '1') return;
+        var input = form.querySelector('input[name="grade"]');
+        if (input) input.value = btn.getAttribute('data-grade') || '';
+      }, true);
       document.addEventListener('submit', function (e) {
         var form = e.target;
         if (!form || form.getAttribute('data-review-grade') !== '1') return;
-        var buttons = form.querySelectorAll('button[type="submit"]');
-        for (var i = 0; i < buttons.length; i++) {
-          buttons[i].disabled = true;
+        var input = form.querySelector('input[name="grade"]');
+        if (!input) return;
+        var sub = e.submitter;
+        if (sub && sub.getAttribute && sub.getAttribute('data-grade')) {
+          input.value = sub.getAttribute('data-grade');
         }
       }, true);
+      document.addEventListener('htmx:beforeRequest', function (e) {
+        var form = e.target;
+        if (!form || form.getAttribute('data-review-grade') !== '1') return;
+        setFormBusy(form, true);
+      });
+      document.addEventListener('htmx:responseError', function (e) {
+        var form = e.target;
+        if (!form || form.getAttribute('data-review-grade') !== '1') return;
+        setFormBusy(form, false);
+      });
+      document.addEventListener('htmx:sendError', function (e) {
+        var form = e.target;
+        if (!form || form.getAttribute('data-review-grade') !== '1') return;
+        setFormBusy(form, false);
+      });
+      // Allow 4xx review partials (error banner) to swap into #review-main.
+      document.addEventListener('htmx:beforeSwap', function (e) {
+        var d = e.detail;
+        if (!d || !d.xhr) return;
+        var t = d.target;
+        if (!t || t.id !== 'review-main') return;
+        var code = d.xhr.status;
+        if (code >= 400 && code < 500 && d.serverResponse) {
+          d.shouldSwap = true;
+          d.isError = false;
+        }
+      });
     })();
   </script>
 `
@@ -491,7 +537,7 @@ func reviewEmptyHTML() string {
 func reviewEmptyPartial() string {
 	return `      <div class="mt-6 rounded-xl border border-slate-200 bg-white p-8 text-center shadow-sm">
         <p class="text-lg font-medium text-slate-800">Queue empty</p>
-        <p class="mt-2 text-sm text-slate-500">No due or new Cards. Scrape news if needed, then open <strong>Articles</strong> and tap <strong>Add to review</strong> on a sentence.</p>
+        <p class="mt-2 text-sm text-slate-500">No due or new Cards. Scrape news if needed, then open <strong>Articles</strong> and tap a sentence to study.</p>
         <div class="mt-6 flex flex-wrap justify-center gap-3">
           <a href="/" class="inline-block rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white hover:bg-blue-600">Home</a>
           <a href="/articles" class="inline-block rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100">Articles</a>
@@ -531,14 +577,15 @@ func reviewPartial(item review.Item, errMsg string) string {
         <input type="hidden" name="card_id" value="%d">
         <input type="hidden" name="sentence_id" value="%d">
         <input type="hidden" name="card_updated_at" value="%s">
-        <button type="submit" name="grade" value="again"
-          class="rounded-xl bg-red-500 px-3 py-3 text-sm font-semibold text-white shadow hover:bg-red-600 active:scale-[0.98] disabled:opacity-50">Again</button>
-        <button type="submit" name="grade" value="hard"
-          class="rounded-xl bg-orange-400 px-3 py-3 text-sm font-semibold text-white shadow hover:bg-orange-500 active:scale-[0.98] disabled:opacity-50">Hard</button>
-        <button type="submit" name="grade" value="good"
-          class="rounded-xl bg-primary px-3 py-3 text-sm font-semibold text-white shadow hover:bg-blue-600 active:scale-[0.98] disabled:opacity-50">Good</button>
-        <button type="submit" name="grade" value="easy"
-          class="rounded-xl bg-emerald-500 px-3 py-3 text-sm font-semibold text-white shadow hover:bg-emerald-600 active:scale-[0.98] disabled:opacity-50">Easy</button>
+        <input type="hidden" name="grade" value="" data-review-grade-input>
+        <button type="submit" data-grade="again"
+          class="rounded-xl bg-red-500 px-3 py-3 text-sm font-semibold text-white shadow hover:bg-red-600 active:scale-[0.98]">Again</button>
+        <button type="submit" data-grade="hard"
+          class="rounded-xl bg-orange-400 px-3 py-3 text-sm font-semibold text-white shadow hover:bg-orange-500 active:scale-[0.98]">Hard</button>
+        <button type="submit" data-grade="good"
+          class="rounded-xl bg-primary px-3 py-3 text-sm font-semibold text-white shadow hover:bg-blue-600 active:scale-[0.98]">Good</button>
+        <button type="submit" data-grade="easy"
+          class="rounded-xl bg-emerald-500 px-3 py-3 text-sm font-semibold text-white shadow hover:bg-emerald-600 active:scale-[0.98]">Easy</button>
       </form>`,
 		errBlock,
 		sentenceHTML,

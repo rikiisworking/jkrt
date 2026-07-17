@@ -59,7 +59,7 @@ func TestParseMainFixture(t *testing.T) {
 }
 
 func TestParseEasyFixture(t *testing.T) {
-	data, err := os.ReadFile(fixturePath(t, "nhk_easy_sample.xml"))
+	data, err := os.ReadFile(fixturePath(t, "rss_sample_short.xml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestParseMultiPublisherFixtures(t *testing.T) {
 
 func TestParseRSSReader(t *testing.T) {
 	// ParseRSS (io.Reader) path — used when streaming; keep covered.
-	f, err := os.Open(fixturePath(t, "nhk_easy_sample.xml"))
+	f, err := os.Open(fixturePath(t, "rss_sample_short.xml"))
 	if err != nil {
 		t.Fatal(err)
 	}

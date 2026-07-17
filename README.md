@@ -3,7 +3,7 @@
 Personal web app for **N2 → N1 reading**: pull **Japanese news RSS** (NHK, Yahoo topics, ITmedia, BBC Japanese, …), tap sentences to extract **words** (lemma + reading) into the deck, and review them with **Anki-like SM-2** scheduling in real sentence context.
 
 > **Status:** Phase 6 complete — stats, export, performance (v1 phases 0–6 done).  
-> **Study path:** extract-on-tap ([ADR 0006](docs/adr/0006-extract-on-tap.md)) — Scrape is library only; Cards after **Add to review**.  
+> **Study path:** extract-on-tap ([ADR 0006](docs/adr/0006-extract-on-tap.md)) — Scrape is library only; Cards after **tap a sentence**.  
 > See [`DEVELOPMENT_PLAN.md`](DEVELOPMENT_PLAN.md) and [`CONTEXT.md`](CONTEXT.md).  
 > Architecture: pure `schedule` + deep `review` ([ADR 0005](docs/adr/0005-pure-schedule-deep-review.md)).  
 > Ops: [Auth, cookies, Cloudflare Tunnel](docs/auth-and-tunnel.md) (full step-by-step).
@@ -25,7 +25,7 @@ Personal web app for **N2 → N1 reading**: pull **Japanese news RSS** (NHK, Yah
 
 ### Learning loop (end-to-end)
 
-You do **not** grade whole articles or single kanji. **Scrape** builds a reading library only. You open **Articles**, tap **Add to review** on a sentence (extract), then grade **one Word/Card at a time**.
+You do **not** grade whole articles or single kanji. **Scrape** builds a reading library only. You open **Articles**, tap **tap a sentence** on a sentence (extract), then grade **one Word/Card at a time**.
 
 ```mermaid
 flowchart LR
@@ -39,7 +39,7 @@ flowchart LR
 
   S[Scrape<br/>user /api/scrape]
   A[Articles + Sentences<br/>no Cards yet]
-  T[Tap sentence<br/>Add to review]
+  T[Tap sentence<br/>tap a sentence]
   K[Kagome analyze]
   W[Words + Cards]
   Q[Review queue<br/>due then new]
@@ -62,7 +62,6 @@ One **Scrape** always pulls **all** of these (partial success per feed is OK). U
 | `name` | Default URL | Notes |
 |--------|-------------|--------|
 | `nhk_main` | `https://news.web.nhk/n-data/conf/na/rss/cat0.xml` | Override: `JKRT_NHK_MAIN_RSS_URL` |
-| `nhk_easy` | *(empty)* | Set `JKRT_NHK_EASY_RSS_URL` when you have a live Easy RSS |
 | `yahoo_topics` | `https://news.yahoo.co.jp/rss/topics/top-picks.xml` | Major topics; often title-heavy |
 | `itmedia_news` | `https://rss.itmedia.co.jp/rss/2.0/news_bursts.xml` | Tech news (JA) |
 | `bbc_japanese` | `https://feeds.bbci.co.uk/japanese/rss.xml` | BBC News 日本語 |
@@ -108,7 +107,7 @@ flowchart TD
   Start([scrapeOne]) --> Name{name empty?}
   Name -->|yes| Err1[ok=false · error]
   Name -->|no| URL{feed URL empty?}
-  URL -->|yes| Soft[ok=false<br/>feed URL not configured<br/>e.g. nhk_easy until env set]
+  URL -->|yes| Soft[ok=false<br/>feed URL not configured or fetch error]
   URL -->|no| Fetch[GET feed<br/>User-Agent jkrt · Accept RSS/XML<br/>body cap 8 MiB]
   Fetch -->|HTTP / dial / timeout| Err2[ok=false · error]
   Fetch -->|200 body| Parse[Parse RSS 2.0<br/>skip items with no guid/link]
@@ -162,7 +161,7 @@ flowchart LR
   RT --> Art[articles row]
   G --> Art
   Art --> Sent[sentences only]
-  Sent -.->|tap Add to review| Words[words + cards]
+  Sent -.->|tap tap a sentence| Words[words + cards]
 
   H -.->|out of scope| X[×]
   GQ -.-> X
@@ -361,7 +360,7 @@ jkrt/
 
 - [x] Local Go server with password auth (HMAC session cookie)
 - [x] User-triggered scrape of **all** built-in RSS feeds (NHK + others; no HTML page scrape) → library only
-- [x] **Extract-on-tap**: **Add to review** on a Sentence runs Kagome → kanji-bearing **Words** + Card rows ([ADR 0006](docs/adr/0006-extract-on-tap.md))
+- [x] **Extract-on-tap**: **tap a sentence** on a Sentence runs Kagome → kanji-bearing **Words** + Card rows ([ADR 0006](docs/adr/0006-extract-on-tap.md))
 - [x] Review one Word at a time (Again / Hard / Good / Easy) with SM-2 scheduling
 - [x] Sentence context with unfamiliar words highlighted; furigana on toggle (default off)
 - [x] Dashboard / browse polish
@@ -472,9 +471,8 @@ make scrape
 # or: curl -sS -X POST http://127.0.0.1:8080/api/scrape
 ```
 
-Needs a live network path. NHK **Easy** soft-fails until you set `JKRT_NHK_EASY_RSS_URL`. Other built-in feeds use hardcoded public URLs (see [Built-in RSS sources](#built-in-rss-sources)).
 
-Scrape stores **Articles + Sentences only**. The review queue stays empty until you open [Articles](http://localhost:8080/articles), open an article, and tap **Add to review** on a sentence (Sentence extract).
+Scrape stores **Articles + Sentences only**. The review queue stays empty until you open [Articles](http://localhost:8080/articles), open an article, and tap **tap a sentence** on a sentence (Sentence extract).
 
 ### 6. Stop the server
 
@@ -579,7 +577,6 @@ Your phone cannot reach `localhost` on your laptop over the internet. Cloudflare
 | `JKRT_SESSION_SECRET` | — | Required when auth on (≥32 bytes) |
 | `JKRT_SESSION_TTL` | `168h` | Cookie + signed payload lifetime |
 | `JKRT_NHK_MAIN_RSS_URL` | NHK main cat0 | Override main feed |
-| `JKRT_NHK_EASY_RSS_URL` | *(empty)* | Set when a live Easy RSS is known |
 
 ### Session cookie (summary)
 
@@ -610,7 +607,7 @@ Typical session:
 
 ```text
 login → dashboard → POST scrape → GET /articles → open article
-                  → POST …/sentences/:sid/extract (Add to review)
+                  → POST …/sentences/:sid/extract (tap a sentence)
                   → GET /review → POST grade → GET /review → …
                   ↘ GET /api/export
 ```
@@ -635,8 +632,7 @@ No live network in tests; RSS/analyzer fixtures live under `testdata/`.
 | `JKRT_SESSION_SECRET is required` | Auth defaults to **on**. Use `make run-dev` for local open access, or `make env` + `make run-auth`. |
 | `no user exists and JKRT_PASSWORD is not set` | Set `JKRT_PASSWORD` once to create the login user, or use `make env` and edit `.env`. |
 | Port already in use | Change `JKRT_ADDR`, e.g. `JKRT_ADDR=:8081 make run-dev`. |
-| Empty review queue | Scrape builds a library only. Open **Articles**, tap **Add to review** on a sentence; Cards appear after extract. |
-| Easy feed `feed URL not configured` | Expected until `JKRT_NHK_EASY_RSS_URL` is set. |
+| Empty review queue | Scrape builds a library only. Open **Articles**, tap **tap a sentence** on a sentence; Cards appear after extract. |
 | Phone cannot open `localhost` | Use Cloudflare Tunnel ([guide](docs/auth-and-tunnel.md)), not the laptop’s localhost URL. |
 | Modules fail to download | Need network once; check proxy/firewall; retry `go run ./cmd/server`. |
 

@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -281,13 +282,20 @@ func (d *DB) ExtractSentenceForArticle(userID, articleID, sentenceID int64, a *a
 		return ExtractResult{}, err
 	}
 
+	// Resolve JLPT eligibility before opening a transaction: MaxOpenConns(1) would
+	// deadlock if cache queries ran while a tx held the only connection.
+	eligible, err := d.filterCandidates(context.Background(), cands)
+	if err != nil {
+		return ExtractResult{}, err
+	}
+
 	tx, err := d.sql.Begin()
 	if err != nil {
 		return ExtractResult{}, fmt.Errorf("begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	cardsNew, candCount, err := persistCandidatesTx(tx, userID, sentenceID, cands, now, d.scheduleParams())
+	cardsNew, candCount, err := persistCandidatesTx(tx, userID, sentenceID, eligible, now, d.scheduleParams())
 	if err != nil {
 		return ExtractResult{}, err
 	}
@@ -337,13 +345,18 @@ func (d *DB) PersistCandidates(userID, sentenceID int64, candidates []analyze.Ca
 		return fmt.Errorf("sentenceID is required")
 	}
 
+	eligible, err := d.filterCandidates(context.Background(), candidates)
+	if err != nil {
+		return err
+	}
+
 	tx, err := d.sql.Begin()
 	if err != nil {
 		return fmt.Errorf("begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if _, _, err := persistCandidatesTx(tx, userID, sentenceID, candidates, now, d.scheduleParams()); err != nil {
+	if _, _, err := persistCandidatesTx(tx, userID, sentenceID, eligible, now, d.scheduleParams()); err != nil {
 		return err
 	}
 	// Mark extracted when using low-level PersistCandidates (tests).
@@ -368,8 +381,40 @@ func newManualExternalID() (string, error) {
 	return "manual-" + hex.EncodeToString(b[:]), nil
 }
 
-// persistCandidatesTx writes sentence_words + new Cards.
-// Returns cardsNew (RowsAffected inserts only) and word-candidate count.
+// filterCandidates drops non-Word-candidates and Words that fail the N2+ JLPT gate.
+// Must run outside a transaction when using SQLCache (single-conn SQLite).
+func (d *DB) filterCandidates(ctx context.Context, candidates []analyze.Candidate) ([]analyze.Candidate, error) {
+	var classifyUsed int
+	out := make([]analyze.Candidate, 0, len(candidates))
+	for _, c := range candidates {
+		surface := c.Surface
+		reading := strings.TrimSpace(c.Reading)
+		if !analyze.IsWordCandidate(surface, reading) {
+			continue
+		}
+		lemma := strings.TrimSpace(c.Lemma)
+		if lemma == "" || analyze.IsMeCabPlaceholder(lemma) {
+			lemma = strings.TrimSpace(surface)
+		}
+		if lemma == "" || analyze.IsMeCabPlaceholder(lemma) {
+			continue
+		}
+		c.Lemma = lemma
+		c.Reading = reading
+		ok, err := d.wordIsEligible(ctx, lemma, reading, &classifyUsed)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+// persistCandidatesTx writes sentence_words + new Cards for pre-filtered candidates.
+// Returns cardsNew (RowsAffected inserts only) and candidate count.
 func persistCandidatesTx(tx *sql.Tx, userID, sentenceID int64, candidates []analyze.Candidate, now time.Time, params schedule.Params) (cardsNew, candCount int, err error) {
 	nowStr := now.UTC().Format(time.RFC3339)
 
@@ -381,15 +426,11 @@ func persistCandidatesTx(tx *sql.Tx, userID, sentenceID int64, candidates []anal
 	for _, c := range candidates {
 		surface := c.Surface
 		reading := strings.TrimSpace(c.Reading)
-		// Defense in depth: empty / MeCab "*" reading must never create a Word/Card.
-		if !analyze.IsWordCandidate(surface, reading) {
-			continue
-		}
 		lemma := strings.TrimSpace(c.Lemma)
-		if lemma == "" || analyze.IsMeCabPlaceholder(lemma) {
+		if lemma == "" {
 			lemma = strings.TrimSpace(surface)
 		}
-		if lemma == "" || analyze.IsMeCabPlaceholder(lemma) {
+		if !analyze.IsWordCandidate(surface, reading) {
 			continue
 		}
 		candCount++

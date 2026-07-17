@@ -242,7 +242,6 @@ Hardcoded in `internal/scrape.DefaultSources` (same pattern as original NHK main
 | name | Default feed_url | Notes |
 |------|------------------|--------|
 | `nhk_main` | `https://news.web.nhk/n-data/conf/na/rss/cat0.xml` | Verified 2026-07-17 (XML RSS; title+description). Override: `JKRT_NHK_MAIN_RSS_URL`. |
-| `nhk_easy` | *(empty until configured)* | No stable public **RSS** verified 2026-07-17. Live URL via `JKRT_NHK_EASY_RSS_URL`; soft-fail when empty. Tests use fixtures. |
 | `yahoo_topics` | `https://news.yahoo.co.jp/rss/topics/top-picks.xml` | Yahoo!ニュース major topics (JA). Often title-heavy. |
 | `itmedia_news` | `https://rss.itmedia.co.jp/rss/2.0/news_bursts.xml` | ITmedia NEWS latest (JA). |
 | `bbc_japanese` | `https://feeds.bbci.co.uk/japanese/rss.xml` | BBC News 日本語. |
@@ -307,7 +306,6 @@ jkrt/
 | `JKRT_SESSION_SECRET` | *(required if auth on)* | ≥32 bytes random |
 | `JKRT_SESSION_TTL` | `168h` | 7 days |
 | `JKRT_NHK_MAIN_RSS_URL` | seed default above | override |
-| `JKRT_NHK_EASY_RSS_URL` | empty | set when known |
 | `JKRT_NEW_PER_DAY` | `20` | |
 | `JKRT_SESSION_LIMIT` | `40` | |
 
@@ -360,7 +358,7 @@ When `JKRT_AUTH=on`, unauthenticated requests to protected routes → **401** (A
 | GET | `/review` | yes | 3 | — | `200` HTML from **next** payload (focus Word + Sentence spans) or empty state |
 | POST | `/review` | yes | 3 | form `card_id`, `grade`, `sentence_id`, **`card_updated_at`** | `302` `/review` (re-**next**) or `200` HTMX **partial** (`#review-main`); stale double-submit re-nexts; bad input → 4xx |
 | GET | `/articles` | yes | 4 | — | `200` HTML article list (newest first) or empty state |
-| GET | `/articles/:id` | yes | 4 | path id | `200` HTML Article + Sentences (Add to review / In queue); missing → `404` HTML |
+| GET | `/articles/:id` | yes | 4 | path id | `200` HTML Article + Sentences (tap to extract / In queue); missing → `404` HTML |
 | POST | `/articles/:id/sentences/:sid/extract` | yes | ADR 0006 | empty body | Extract sentence → Words/Cards; **HTMX** → `200` sentence row; else `302` `/articles/:id`; wrong ownership/`sid` → `404` |
 
 \*When auth off, `/` is open.
@@ -455,7 +453,7 @@ go test ./internal/analyze/... ./internal/db/... -count=1
 
 - [x] Seed `news_sources` rows (or `EnsureSource` at scrape time)
 - [x] `POST /api/scrape` all feeds; parse; call **`StoreArticle`** per item (not ad-hoc SQL; no Cards — ADR 0006)
-- [x] Fixtures `testdata/rss/nhk_main_sample.xml`, `nhk_easy_sample.xml`
+- [x] Fixtures `testdata/rss/nhk_main_sample.xml`, `rss_sample_short.xml`
 - [x] Mockable HTTP client; timeouts; partial success JSON
 - [x] Dedupe stable via `IngestExists` (count `items_new` from Created only)
 
@@ -494,7 +492,7 @@ go test ./internal/scrape/... ./... -count=1
 ```bash
 go test ./internal/schedule/... ./internal/review/... -count=1
 go test ./... -count=1
-# manual: login → scrape → Articles → Add to review (extract) → /review → grade again/hard/good/easy → next card
+# manual: login → scrape → Articles → tap sentence (extract) → /review → grade again/hard/good/easy → next card
 ```
 
 **Deliverable:** daily Review loop usable on phone-width browser.
@@ -597,7 +595,6 @@ go test ./... -count=1
 | 2026-07-17 | Phase 3 hardening: optimistic grade lock (`card_updated_at`), skip unpresentable Cards, HTMX `#review-main` partial + furigana sessionStorage, shared `schedule.Params` on DB extract, docs clarify UTC-day SessionLimit + NewPerDay on first grade. |
 | 2026-07-17 | Phase 3 complete: pure `internal/schedule` (NewCard/Apply/IsUnfamiliar, G1–G9), deep `internal/review` (next/grade, queue caps, newest Sentence spans), extract via `schedule.NewCard`, `GET/POST /review` HTML (4 grades, furigana toggle off by default, unfamiliar highlight). |
 | 2026-07-17 | Pre–Phase 3 architecture: pure `internal/schedule` + deep `internal/review` (next/grade); extract uses `schedule.NewCard`; ADR 0005; plan/HTTP/`sentence_id` locked. Implementation still Phase 3 checklist. |
-| 2026-07-17 | Phase 2 complete: `internal/scrape` RSS 2.0 parse + dual NHK fetch, `POST /api/scrape` (partial success JSON), fixtures under `testdata/rss/`, mock HTTP client (no network in tests), store/ingest per item with `items_new` dedupe (today: `StoreArticle`; historical name was `IngestArticle`). Easy URL optional (`JKRT_NHK_EASY_RSS_URL`); soft-fail when empty. |
 | 2026-07-17 | Phase 1 complete: `migrations/001_init.sql`, `internal/db` (migrate + extract + unfamiliar), Kagome IPA analyze, words/sentence_words/cards on extract, fixture tests green. |
 | 2026-07-17 | Phase 0 complete: go module, Fiber, `/health`, static placeholder (Tailwind CDN + Noto Sans JP), bcrypt + HMAC session auth, acceptance curls green. |
 | 2026-07-17 | Agent-hardening: sm2-spec, HTTP table, locked pick-ones, acceptance curls, CDN rule, feed URL notes. |

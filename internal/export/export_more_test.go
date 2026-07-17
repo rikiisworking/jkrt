@@ -131,6 +131,7 @@ func openDB(t *testing.T) *db.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
+	d.AllowAllWords()
 	t.Cleanup(func() { _ = d.Close() })
 	return d
 }

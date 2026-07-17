@@ -33,7 +33,7 @@ One RSS item turned into stored text (title + feed body/summary fields available
 _Avoid_: Story, full webpage, HTML document
 
 **Source**:
-A configured **RSS feed** the learner may Scrape (user-triggered). Built-in Sources include **NHK main**, **NHK Easy** (optional URL), plus other public Japanese RSS defaults (Yahoo! major topics, ITmedia NEWS, BBC Japanese) with hardcoded feed URLs in `internal/scrape`. Scrape always pulls **all** configured Sources. Still **RSS only** — no HTML page crawl.
+A configured **RSS feed** the learner may Scrape (user-triggered). Built-in Sources include **NHK main** plus other public Japanese RSS defaults (Yahoo! major topics, ITmedia NEWS, BBC Japanese) with hardcoded feed URLs in `internal/scrape`. Scrape always pulls **all** configured Sources. Still **RSS only** — no HTML page crawl.
 _Avoid_: Scraper (the mechanism), HTML site crawl, paywalled full-article fetch
 
 **Word candidate**:
@@ -45,7 +45,7 @@ The schedulable learning record for one Word (lemma + Reading) for the Learner. 
 _Avoid_: Anki note (we have no multi-field note types), character progress row, familiarity ladder (retired)
 
 **Sentence extract** (opt-in):
-Learner action on an Article’s Sentence (tap “Add to review”) that analyzes that Sentence and creates Words / occurrences / Cards for its Word candidates. Idempotent re-tap does not reset existing Card schedules. Untapped Sentences never enter the Review queue.
+Learner action on an Article’s Sentence (tap the sentence box) that analyzes that Sentence and creates Words / occurrences / Cards for **N2 and N1** Word candidates (embedded JLPT map; unknowns may be classified via Grok Build headless). Lower-level listed Words are skipped. Idempotent re-tap does not reset existing Card schedules. Untapped Sentences never enter the Review queue.
 _Avoid_: Grade whole Sentence, auto-extract on Scrape, soft link into a full pre-built deck
 
 **Learning phase**:

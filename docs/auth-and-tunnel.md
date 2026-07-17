@@ -328,7 +328,7 @@ Optional; not required if you trust a strong JKRT password and secret.
 | Immediate “unauthorized” after login | Clock skew rare; more often wrong password or multiple instances with different `JKRT_SESSION_SECRET` |
 | Works on laptop URL, not phone | Phone must use the **Cloudflare HTTPS hostname**, not `http://192.168.…` (unless you intend LAN-only) |
 | `JKRT_SESSION_SECRET is required` | Auth default is **on**; set secret (≥32 chars) or use `make env` / `make run-dev` for local-only |
-| Easy RSS scrape fails | Expected until `JKRT_NHK_EASY_RSS_URL` is set; main feed needs network on the host |
+| One RSS source fails | Partial success is normal; other feeds still ingest |
 
 ---
 

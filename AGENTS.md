@@ -94,9 +94,9 @@ golangci-lint run   # when configured
 
 ## Current status
 
-**Phase 6 (Stats, export, performance) — complete** (acceptance `go test ./...` green). `GET /api/stats`, `GET /api/export?format=json|csv`, dashboard library/phase numbers + export links, `migrations/002_perf.sql`, ingest `MaxRawTextRunes` truncate, export row caps. **v1 planned phases 0–6 are done.**
+**Phase 6 (Stats, export, performance) — complete.** Extract-on-tap (ADR 0006) shipped. Follow-ups on main: Scrape rename, NHK Easy removed, tap-sentence extract UX, **N2+ JLPT extract filter** (ADR 0007) + optional Grok headless classify for unknowns, review grade freeze fix.
 
-**Next:** Extract-on-tap (ADR 0006) implemented on branch `feat/extract-on-tap`. Further work only on explicit request.
+**Next:** Further work only on explicit request.
 
 ## Safety
 

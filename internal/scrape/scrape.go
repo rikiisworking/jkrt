@@ -17,13 +17,12 @@ import (
 // Source names (news_sources.name). Stable identifiers for UI/JSON and DB rows.
 const (
 	SourceNHKMain     = "nhk_main"
-	SourceNHKEasy     = "nhk_easy"
 	SourceYahooTopics = "yahoo_topics"
 	SourceITmediaNews = "itmedia_news"
 	SourceBBCJapanese = "bbc_japanese"
 )
 
-// Default feed URLs (hardcoded; NHK main/easy may be overridden via config env).
+// Default feed URLs (hardcoded; NHK main may be overridden via config env).
 const (
 	// DefaultMainRSSURL is the verified NHK main cat0 feed (DEVELOPMENT_PLAN.md).
 	DefaultMainRSSURL = "https://news.web.nhk/n-data/conf/na/rss/cat0.xml"
@@ -74,10 +73,9 @@ type Scraper struct {
 }
 
 // DefaultSources returns the built-in multi-publisher RSS list.
-// mainURL/easyURL override NHK defaults (empty main → DefaultMainRSSURL).
-// Easy URL may be empty (soft-fail at scrape time until JKRT_NHK_EASY_RSS_URL is set).
+// mainURL overrides the NHK main default (empty → DefaultMainRSSURL).
 // Extra publishers use hardcoded defaults (same style as NHK main).
-func DefaultSources(mainURL, easyURL string) []Source {
+func DefaultSources(mainURL string) []Source {
 	if strings.TrimSpace(mainURL) == "" {
 		mainURL = DefaultMainRSSURL
 	}
@@ -86,11 +84,6 @@ func DefaultSources(mainURL, easyURL string) []Source {
 			Name:    SourceNHKMain,
 			FeedURL: strings.TrimSpace(mainURL),
 			Notes:   "NHK main news RSS",
-		},
-		{
-			Name:    SourceNHKEasy,
-			FeedURL: strings.TrimSpace(easyURL),
-			Notes:   "NHK Easy RSS (optional URL until configured)",
 		},
 		{
 			Name:    SourceYahooTopics,
@@ -116,7 +109,7 @@ func New(database *db.DB, sources []Source, client HTTPDoer) *Scraper {
 		client = &http.Client{Timeout: DefaultTimeout}
 	}
 	if sources == nil {
-		sources = DefaultSources(DefaultMainRSSURL, "")
+		sources = DefaultSources(DefaultMainRSSURL)
 	}
 	return &Scraper{
 		Client:  client,
