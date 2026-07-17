@@ -1,6 +1,7 @@
 package http
 
 import (
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -15,8 +16,9 @@ func (a *App) handleHealth(c *fiber.Ctx) error {
 
 func (a *App) handleIndex(c *fiber.Ctx) error {
 	// Prefer static index.html when available; fall back to inline placeholder.
+	// HTML is never exposed via the public /static mount (assets only).
 	if a.StaticDir != "" {
-		path := a.StaticDir + "/index.html"
+		path := filepath.Join(a.StaticDir, "index.html")
 		if err := c.SendFile(path); err == nil {
 			return nil
 		}
@@ -104,8 +106,12 @@ func (a *App) sessionOK(c *fiber.Ctx) bool {
 	if raw == "" {
 		return false
 	}
-	_, err := a.Sessions.Parse(raw, time.Now().UTC())
-	return err == nil
+	sess, err := a.Sessions.Parse(raw, time.Now().UTC())
+	if err != nil {
+		return false
+	}
+	// v1 single Learner: only user id=1 is valid.
+	return sess.UserID == auth.UserID
 }
 
 func isHTTPS(c *fiber.Ctx) bool {

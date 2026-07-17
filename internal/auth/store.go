@@ -14,7 +14,7 @@ type Store struct {
 }
 
 // OpenStore opens (or creates) the SQLite database and ensures the users table exists.
-// Phase 0 only needs users; full schema arrives in Phase 1 migrations.
+// Phase 0 only needs users; full schema arrives in Phase 1 migrations using UsersTableDDL.
 func OpenStore(dbPath string) (*Store, error) {
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -23,13 +23,7 @@ func OpenStore(dbPath string) (*Store, error) {
 	// One connection is enough for the single-user app and avoids lock surprises in tests.
 	db.SetMaxOpenConns(1)
 
-	if _, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS users (
-			id INTEGER PRIMARY KEY,
-			password_hash TEXT NOT NULL,
-			created_at TEXT NOT NULL
-		);
-	`); err != nil {
+	if _, err := db.Exec(UsersTableDDL); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("create users table: %w", err)
 	}

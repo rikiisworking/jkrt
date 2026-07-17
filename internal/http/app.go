@@ -1,6 +1,7 @@
 package http
 
 import (
+	"path/filepath"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
@@ -65,9 +66,10 @@ func (a *App) routes() {
 	a.Fiber.Get("/login", a.handleLoginGet)
 	a.Fiber.Post("/login", a.handleLoginPost)
 
-	// Static assets (HTML pages use auth middleware where needed).
+	// Public static assets only (CSS/images under web/static/assets).
+	// Do not mount HTML here — index is served only via authenticated handleIndex.
 	if a.StaticDir != "" {
-		a.Fiber.Static("/static", a.StaticDir)
+		a.Fiber.Static("/static", filepath.Join(a.StaticDir, "assets"))
 	}
 
 	// Protected

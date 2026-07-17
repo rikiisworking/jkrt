@@ -53,7 +53,8 @@ If something is unspecified, **do not invent product behavior** — implement th
 
 ## Tech stack
 
-- Go 1.23+ · Fiber · SQLite · RSS/XML parser (no goquery in v1)  
+- Go 1.25+ · Fiber · SQLite · RSS/XML parser (no goquery in v1)  
+  (`modernc.org/sqlite` pins the module language version; match local toolchain accordingly)  
 - `github.com/ikawaha/kagome/v2` (or current Kagome v2 module path) + IPA dict  
 - HTMX + Tailwind CDN · Noto Sans JP · primary `#3B82F6`  
 - Password hash: **bcrypt**  

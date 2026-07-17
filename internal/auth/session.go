@@ -41,9 +41,13 @@ func (m *Manager) TTL() time.Duration {
 }
 
 // Issue creates a signed cookie value for the given user, valid for TTL from now.
+// v1 only allows UserID (the single Learner).
 func (m *Manager) Issue(userID int, now time.Time) (string, time.Time, error) {
 	if len(m.secret) == 0 {
 		return "", time.Time{}, fmt.Errorf("session secret is empty")
+	}
+	if userID != UserID {
+		return "", time.Time{}, fmt.Errorf("invalid user id for v1: %d", userID)
 	}
 	exp := now.Add(m.ttl)
 	payload := fmt.Sprintf("%d|%d", userID, exp.Unix())
@@ -52,7 +56,8 @@ func (m *Manager) Issue(userID int, now time.Time) (string, time.Time, error) {
 	return base64.RawURLEncoding.EncodeToString([]byte(raw)), exp, nil
 }
 
-// Parse validates a cookie value and returns the session if valid and not expired.
+// Parse validates a cookie value and returns the session if valid, not expired,
+// and pinned to UserID (v1 single Learner).
 func (m *Manager) Parse(value string, now time.Time) (Session, error) {
 	if value == "" {
 		return Session{}, fmt.Errorf("empty session")
@@ -72,6 +77,9 @@ func (m *Manager) Parse(value string, now time.Time) (Session, error) {
 	userID, err := strconv.Atoi(parts[0])
 	if err != nil {
 		return Session{}, fmt.Errorf("invalid user id")
+	}
+	if userID != UserID {
+		return Session{}, fmt.Errorf("invalid user id for v1: %d", userID)
 	}
 	expUnix, err := strconv.ParseInt(parts[1], 10, 64)
 	if err != nil {
