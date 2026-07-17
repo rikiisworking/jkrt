@@ -10,10 +10,8 @@ import (
 	"time"
 
 	"github.com/rikiisworking/jkrt/internal/analyze"
+	"github.com/rikiisworking/jkrt/internal/schedule"
 )
-
-// StartingEase is the SM-2 starting ease for new Cards (docs/sm2-spec.md).
-const StartingEase = 2.5
 
 // LearnerUserID is the single v1 learner (users.id = 1).
 const LearnerUserID int64 = 1
@@ -130,7 +128,7 @@ func (d *DB) IngestArticle(userID int64, src SourceRef, art ArticleInput, a *ana
 		return IngestResult{}, err
 	}
 
-	if err := persistSentenceItems(tx, userID, articleID, items, now); err != nil {
+	if err := persistSentenceItems(tx, userID, articleID, items, now, d.scheduleParams()); err != nil {
 		return IngestResult{}, err
 	}
 
@@ -194,7 +192,7 @@ func (d *DB) PersistCandidates(userID, sentenceID int64, candidates []analyze.Ca
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if err := persistCandidatesTx(tx, userID, sentenceID, candidates, now); err != nil {
+	if err := persistCandidatesTx(tx, userID, sentenceID, candidates, now, d.scheduleParams()); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -221,13 +219,13 @@ func prepareSentenceItems(text string, a *analyze.Analyzer) ([]sentenceItem, err
 	return items, nil
 }
 
-func persistSentenceItems(tx *sql.Tx, userID, articleID int64, items []sentenceItem, now time.Time) error {
+func persistSentenceItems(tx *sql.Tx, userID, articleID int64, items []sentenceItem, now time.Time, params schedule.Params) error {
 	for i, it := range items {
 		sid, err := insertSentence(tx, articleID, it.text, i)
 		if err != nil {
 			return err
 		}
-		if err := persistCandidatesTx(tx, userID, sid, it.cands, now); err != nil {
+		if err := persistCandidatesTx(tx, userID, sid, it.cands, now, params); err != nil {
 			return err
 		}
 	}
@@ -242,7 +240,7 @@ func newManualExternalID() (string, error) {
 	return "manual-" + hex.EncodeToString(b[:]), nil
 }
 
-func persistCandidatesTx(tx *sql.Tx, userID, sentenceID int64, candidates []analyze.Candidate, now time.Time) error {
+func persistCandidatesTx(tx *sql.Tx, userID, sentenceID int64, candidates []analyze.Candidate, now time.Time, params schedule.Params) error {
 	nowStr := now.UTC().Format(time.RFC3339)
 
 	// Re-extract replaces occurrence rows for this sentence (no duplicates).
@@ -278,7 +276,7 @@ func persistCandidatesTx(tx *sql.Tx, userID, sentenceID int64, candidates []anal
 			return fmt.Errorf("insert sentence_word: %w", err)
 		}
 
-		if err := upsertNewCard(tx, userID, wordID, nowStr); err != nil {
+		if err := upsertNewCard(tx, userID, wordID, now, params); err != nil {
 			return err
 		}
 	}
@@ -372,15 +370,20 @@ func upsertWord(q execQuerier, lemma, reading string) (int64, error) {
 	return res.LastInsertId()
 }
 
-func upsertNewCard(q execQuerier, userID, wordID int64, nowStr string) error {
-	// New card defaults from docs/sm2-spec.md
+func upsertNewCard(q execQuerier, userID, wordID int64, now time.Time, params schedule.Params) error {
+	// New Card defaults only from schedule.NewCard (sm2-spec / ADR 0005).
+	st := schedule.NewCard(params, now)
+	nowStr := now.UTC().Format(time.RFC3339)
+	dueStr := st.DueAt.UTC().Format(time.RFC3339)
 	_, err := q.Exec(
 		`INSERT INTO cards (
 			user_id, word_id, phase, learning_step, interval_days, ease,
 			due_at, reps, lapses, created_at, updated_at
-		) VALUES (?, ?, 'new', 0, 0, ?, ?, 0, 0, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(user_id, word_id) DO NOTHING`,
-		userID, wordID, StartingEase, nowStr, nowStr, nowStr,
+		userID, wordID,
+		string(st.Phase), st.LearningStep, st.IntervalDays, st.Ease,
+		dueStr, st.Reps, st.Lapses, nowStr, nowStr,
 	)
 	if err != nil {
 		return fmt.Errorf("insert card: %w", err)

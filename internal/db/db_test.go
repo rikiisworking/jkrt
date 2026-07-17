@@ -8,6 +8,7 @@ import (
 
 	"github.com/rikiisworking/jkrt/internal/analyze"
 	"github.com/rikiisworking/jkrt/internal/db"
+	"github.com/rikiisworking/jkrt/internal/schedule"
 )
 
 func TestOpenAndMigrate(t *testing.T) {
@@ -76,7 +77,8 @@ func TestIngestTextFixtureCreatesWordsAndCards(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if phase != "new" || step != 0 || interval != 0 || ease != db.StartingEase || reps != 0 || lapses != 0 {
+	wantEase := schedule.DefaultParams().StartingEase
+	if phase != "new" || step != 0 || interval != 0 || ease != wantEase || reps != 0 || lapses != 0 {
 		t.Fatalf("new card fields: phase=%s step=%d interval=%v ease=%v reps=%d lapses=%d",
 			phase, step, interval, ease, reps, lapses)
 	}
@@ -173,37 +175,6 @@ func TestEmptyReadingSkippedOnPersist(t *testing.T) {
 	}
 	if cardCount != 1 {
 		t.Fatalf("empty reading should not create card: got %d", cardCount)
-	}
-}
-
-func TestIsUnfamiliar(t *testing.T) {
-	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
-	past := now.Add(-time.Hour)
-	future := now.Add(time.Hour)
-
-	cases := []struct {
-		name     string
-		phase    string
-		interval float64
-		due      time.Time
-		want     bool
-	}{
-		{"new", "new", 0, future, true},
-		{"learning", "learning", 0, future, true},
-		{"relearning", "relearning", 0, future, true},
-		{"due review", "review", 30, past, true},
-		{"due exactly", "review", 30, now, true},
-		{"young review", "review", 10, future, true},
-		{"mature not due", "review", 21, future, false},
-		{"mature long", "review", 100, future, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := db.IsUnfamiliar(tc.phase, tc.interval, tc.due, now)
-			if got != tc.want {
-				t.Fatalf("got %v want %v", got, tc.want)
-			}
-		})
 	}
 }
 

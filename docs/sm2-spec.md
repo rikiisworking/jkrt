@@ -27,8 +27,8 @@ Package seams: [`0005-pure-schedule-deep-review.md`](adr/0005-pure-schedule-deep
 | `IntervalModifier` | `1.0` |
 | `HardIntervalFactor` | `1.2` (review Hard: `interval * 1.2`) |
 | `LapseNewIntervalFactor` | `0.0` (after lapse graduate, interval starts over from graduating path; see lapse) |
-| `NewPerDay` | `20` |
-| `SessionLimit` | `40` |
+| `NewPerDay` | `20` (UTC day; advances on first **grade**, not presentation alone) |
+| `SessionLimit` | `40` (UTC day **review cap** — max grade rows per day, not a separate sitting id) |
 
 Time: use a single `now time.Time` parameter in pure functions (inject clock in tests).
 
@@ -65,10 +65,10 @@ When a Word is first extracted for the Learner, **`schedule.NewCard`** produces 
 Implemented by **`internal/review` next** (SQL), using **`NewPerDay` / `SessionLimit` from `schedule.Params`**. Not pure schedule transitions.
 
 1. Load due cards: `due_at <= now` and `phase != new`, order by `due_at` ASC.
-2. If under `SessionLimit`, fill with **new** cards (`phase == new`) up to remaining session slots and not exceeding **new introduced today** vs `NewPerDay`.
-3. “Introduced today” = count of cards that left `phase=new` today (first grade applied), or count of new cards shown today — implement **count of cards whose first review row is today**; until first review, showing a new card counts toward both session and new-per-day when **presented**.
+2. If under `SessionLimit` (grades today UTC), fill with **new** cards (`phase == new`) not exceeding **new introduced today** vs `NewPerDay`.
+3. **Introduced today (v1):** count of cards whose **first `reviews` row** falls on the UTC calendar day of `now`. Cap advances when the Learner **grades** a new Card for the first time (not on presentation alone). Sticky queue (same new Card re-shown until graded) prevents burning quota without grading.
 
-**Presentation rule:** when a `new` card is **shown** in a session, it counts toward `NewPerDay` for that calendar day (app local timezone or UTC — **use UTC** for v1, document in config).
+**Day boundary:** UTC calendar day for both caps (v1).
 
 ## Transitions
 

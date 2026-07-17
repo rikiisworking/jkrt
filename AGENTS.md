@@ -36,7 +36,7 @@ If something is unspecified, **do not invent product behavior** — implement th
 - Grade the **whole Sentence** as one Review  
 - Scrape publishers other than configured NHK sources  
 - Hit the network inside unit/integration tests  
-- Scaffold an **npm/Tailwind build** before Phase 4 (use **Tailwind CDN** in Phase 0–3)  
+- Scaffold an **npm/Tailwind build** unless a later phase clearly needs it (CDN through Phase 4+)  
 - Skip schedule tests “until UI exists”  
 - Proceed past Phase 0 without working auth when `JKRT_AUTH=on`  
 - Commit secrets, `.env`, or real `*.db` files  
@@ -93,9 +93,9 @@ golangci-lint run   # when configured
 
 ## Current status
 
-**Phase 2 (RSS Scrape, both sources) — complete.** Dual NHK RSS fetch/parse (`internal/scrape`), `POST /api/scrape` with per-source JSON, fixture-backed tests (no network), `IngestArticle` per item.
+**Phase 4 (Frontend polish) — complete** (acceptance `go test ./...` green). Live **dashboard** on `GET /` (due/new counts, UTC session progress, last scrape, HTMX Scrape, empty library hint); browse **`GET /articles`** + **`GET /articles/:id`**; shared nav + theme `#3B82F6`; `review.Stats` + `db` browse reads. Phase 3 Review/SM-2 unchanged.
 
-**Phase 3 architecture locked (ADR 0005):** pure `internal/schedule` (`NewCard` / `Apply` / `IsUnfamiliar` / `Params`) + deep `internal/review` (**next** / **grade**); extract uses `schedule.NewCard`; HTTP stays thin. **Implementation not started** — next work is schedule G1–G9 then review then `/review` UI (see `DEVELOPMENT_PLAN.md` Phase 3).
+**Next:** Phase 5 — auth harden + tunnel docs (see `DEVELOPMENT_PLAN.md` Phase 5). Implement only the current phase unless the user explicitly asks otherwise.
 
 ## Safety
 

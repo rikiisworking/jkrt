@@ -12,6 +12,8 @@ import (
 	"github.com/rikiisworking/jkrt/internal/auth"
 	"github.com/rikiisworking/jkrt/internal/config"
 	"github.com/rikiisworking/jkrt/internal/db"
+	"github.com/rikiisworking/jkrt/internal/review"
+	"github.com/rikiisworking/jkrt/internal/schedule"
 	"github.com/rikiisworking/jkrt/internal/scrape"
 )
 
@@ -25,6 +27,7 @@ type App struct {
 	AuthEnabled bool
 	DB          *db.DB
 	Analyzer    *analyze.Analyzer
+	Review      *review.Service
 	// HTTPClient is used by Scrape; nil → default client with scrape.DefaultTimeout.
 	// Tests inject a fixture transport so no network is dialed.
 	HTTPClient scrape.HTTPDoer
@@ -38,10 +41,11 @@ type Options struct {
 	StaticDir  string
 	DB         *db.DB
 	Analyzer   *analyze.Analyzer
+	Review     *review.Service
 	HTTPClient scrape.HTTPDoer
 }
 
-// New builds a Fiber application with Phase 0–2 routes.
+// New builds a Fiber application with Phase 0–4 routes.
 func New(opts Options) *App {
 	f := fiber.New(fiber.Config{
 		DisableStartupMessage: true,
@@ -60,6 +64,16 @@ func New(opts Options) *App {
 	})
 	f.Use(recover.New())
 
+	params := schedule.DefaultParams()
+	if opts.DB != nil {
+		// Keep extract NewCard defaults aligned with Review Apply/caps.
+		opts.DB.SetScheduleParams(params)
+	}
+	rev := opts.Review
+	if rev == nil && opts.DB != nil {
+		rev = review.New(opts.DB, params)
+	}
+
 	a := &App{
 		Fiber:       f,
 		Config:      opts.Config,
@@ -69,6 +83,7 @@ func New(opts Options) *App {
 		AuthEnabled: opts.Config.AuthEnabled,
 		DB:          opts.DB,
 		Analyzer:    opts.Analyzer,
+		Review:      rev,
 		HTTPClient:  opts.HTTPClient,
 	}
 	a.routes()
@@ -92,6 +107,10 @@ func (a *App) routes() {
 	protected.Get("/", a.handleIndex)
 	protected.Post("/logout", a.handleLogout)
 	protected.Post("/api/scrape", a.handleScrape)
+	protected.Get("/review", a.handleReviewGet)
+	protected.Post("/review", a.handleReviewPost)
+	protected.Get("/articles", a.handleArticlesList)
+	protected.Get("/articles/:id", a.handleArticleDetail)
 }
 
 // newScraper builds a Scraper from app deps (both NHK sources always).

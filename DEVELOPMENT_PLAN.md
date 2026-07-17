@@ -33,10 +33,10 @@
 
 | Field | Value |
 |-------|--------|
-| **Current phase** | Phase 3 — Review + SM-2 |
-| **Repo state** | Phase 2 complete. Phase 3 **module architecture locked** (ADR 0005): pure `schedule` + deep `review` (next/grade); implementation not started |
+| **Current phase** | Phase 5 — Auth harden + tunnel docs |
+| **Repo state** | Phase 4 **complete**: dashboard (`GET /` due/new counts, UTC session progress, last scrape, HTMX Scrape), browse `GET /articles` + `GET /articles/:id`, shared nav/theme `#3B82F6`, empty states. Acceptance: `go test ./...` green + handler smoke tests. |
 | **Last updated** | 2026-07-17 |
-| **Agent-ready** | Yes (pick-ones locked, SM-2 spec, Review/schedule seams, HTTP surface, acceptance curls) |
+| **Agent-ready** | Yes — implement Phase 5 only unless asked otherwise |
 
 ---
 
@@ -55,7 +55,7 @@ Full definitions: `CONTEXT.md`. Do not contradict:
 | **Grades** | `again` \| `hard` \| `good` \| `easy` |
 | **Scheduler** | [`docs/sm2-spec.md`](docs/sm2-spec.md) only |
 | **Unfamiliar highlight** | See locked predicate below |
-| **Queue** | Due first, then new; 20 new/day, 40/session |
+| **Queue** | Due first, then new; 20 new/day (first grade), 40 reviews/UTC day (`SessionLimit`) |
 | **Sources** | NHK main + NHK Easy |
 | **Scrape** | Always both; RSS fields only |
 | **Lexicon** | Analyzer only (no gloss/JLPT seed) |
@@ -75,8 +75,8 @@ OR (phase == review AND interval_days < 21)
 
 | Phases | Frontend |
 |--------|----------|
-| 0–3 | Static HTML/templates + **HTMX** + **Tailwind CDN** + minimal custom CSS |
-| 4+ | May keep CDN or add a build step only if needed |
+| 0–4 | Static HTML/templates + **HTMX** + **Tailwind CDN** + minimal custom CSS |
+| 5+ | May keep CDN or add a build step only if needed |
 
 ---
 
@@ -197,8 +197,8 @@ Small external interface (HTTP + tests cross the same seam):
 
 | Op | Behaviour |
 |----|-----------|
-| **next**(learner, now) | Review queue: due first (`due_at <= now`, `phase != new`, order `due_at` ASC), then new under `SessionLimit` + `NewPerDay` (count new **shown** today, UTC). Empty queue → **empty result, not an error**. |
-| **grade**(card_id, sentence_id, grade, now) | Validate grade wire value; validate Sentence is linked to Card’s Word; `schedule.Apply`; update `cards`; insert `reviews` with **that** `sentence_id`. Errors if missing card / bad link / bad grade. **Does not** return the next Card — caller calls **next** again (HTTP: 302 GET `/review`). |
+| **next**(learner, now) | Review queue: due first (`due_at <= now`, `phase != new`, order `due_at` ASC), then new under `SessionLimit` (grades today UTC) + `NewPerDay` (cards whose **first review row** is today UTC). Skip unpresentable Cards. Empty queue → **empty result, not an error**. |
+| **grade**(card_id, sentence_id, grade, **card_updated_at**, now) | Validate grade; validate Sentence linked to Card’s Word; **optimistic lock** on `cards.updated_at` (stale → no second Apply); `schedule.Apply`; update `cards`; insert `reviews` with **that** `sentence_id`. **Does not** return the next Card — caller calls **next** again. |
 
 - **Owns Review SQL** on concrete SQLite (`*sql.DB` / `*db.DB` handle). No `ReviewStore` interface until a second adapter exists.
 - **next presentation payload** (no HTML): Sentence text; ordered spans (surface, char range, Word identity, Reading, unfamiliar?); focus Card/Word. Templates own furigana CSS/toggle.
@@ -331,7 +331,7 @@ coverage.out
 
 ---
 
-## HTTP surface (Phase 0–3)
+## HTTP surface (Phase 0–4)
 
 All times JSON errors: `{"error":"..."}` unless noted.  
 When `JKRT_AUTH=on`, unauthenticated requests to protected routes → **401** (API) or **302** to `/login` (HTML).
@@ -339,20 +339,22 @@ When `JKRT_AUTH=on`, unauthenticated requests to protected routes → **401** (A
 | Method | Path | Auth | Phase | Request | Success |
 |--------|------|------|-------|---------|---------|
 | GET | `/health` | no | 0 | — | `200` `{"status":"ok"}` |
-| GET | `/` | yes* | 0 | — | `200` HTML placeholder (or 302 login) |
+| GET | `/` | yes* | 0/4 | — | `200` HTML **dashboard** (due/new counts, session progress, last scrape, links; empty library hint) |
 | GET | `/login` | no | 0 | — | `200` HTML form |
 | POST | `/login` | no | 0 | form `password` | `302` `/` + Set-Cookie; bad → `401` HTML/form error |
 | POST | `/logout` | yes | 0 | — | `302` `/login` clear cookie |
-| POST | `/api/scrape` | yes | 2 | empty body | `200` JSON `{ "sources": [ { "name", "ok", "items_new", "error?" } ] }` |
+| POST | `/api/scrape` | yes | 2/4 | empty body | `200` JSON `{ "sources": [ { "name", "ok", "items_new", "error?" } ] }`; **HTMX** → `200` HTML summary fragment |
 | GET | `/review` | yes | 3 | — | `200` HTML from **next** payload (focus Word + Sentence spans) or empty state |
-| POST | `/review` | yes | 3 | form/JSON `card_id`, `grade`, **`sentence_id`** | `302` `/review` (re-**next**) or `200` HTMX partial after re-**next**; bad input → 4xx |
+| POST | `/review` | yes | 3 | form `card_id`, `grade`, `sentence_id`, **`card_updated_at`** | `302` `/review` (re-**next**) or `200` HTMX **partial** (`#review-main`); stale double-submit re-nexts; bad input → 4xx |
+| GET | `/articles` | yes | 4 | — | `200` HTML article list (newest first) or empty state |
+| GET | `/articles/:id` | yes | 4 | path id | `200` HTML Article + Sentences; missing → `404` HTML |
 
 \*When auth off, `/` is open.
 
 **Grade values:** `again`, `hard`, `good`, `easy` (lowercase).  
 **`sentence_id`:** the Sentence shown with the Card (from **next**); stored on the `reviews` row so history matches on-screen context.
 
-Later phases may add dashboard routes; do not invent Phase 0–3 routes beyond this table without updating this file.
+Do not invent routes beyond this table without updating this file.
 
 ---
 
@@ -457,22 +459,23 @@ go test ./internal/scrape/... ./... -count=1
 
 ---
 
-### Phase 3: Review + SM-2 — **current**
+### Phase 3: Review + SM-2 — **done**
 
 **Architecture locked (2026-07-17):** ADR 0005 + Scheduler/Review sections above. Implement in this order.
 
 - [x] Lock pure `schedule` + deep `review` (next/grade) seams; doc + ADR
-- [ ] `internal/schedule`: `Params`/`DefaultParams`, `NewCard`, `Apply`, `IsUnfamiliar`; G1–G9
-- [ ] `db` extract: new Cards from `schedule.NewCard`; drop forked `StartingEase` / `db.IsUnfamiliar`
-- [ ] `internal/review`: next (queue SQL + newest Sentence + presentation payload) + grade (TX + `reviews` row)
-- [ ] Wire `review` into `http` / `main` with `schedule.DefaultParams()`
-- [ ] `GET/POST /review` HTML; focus one Word; four grade buttons; post `card_id` + `grade` + `sentence_id`
-- [ ] Furigana toggle (default off); Unfamiliar spans in Sentence
-- [ ] Tailwind CDN styling good enough for phone
+- [x] `internal/schedule`: `Params`/`DefaultParams`, `NewCard`, `Apply`, `IsUnfamiliar`; G1–G9
+- [x] `db` extract: new Cards from `schedule.NewCard`; drop forked `StartingEase` / `db.IsUnfamiliar`
+- [x] `internal/review`: next (queue SQL + newest Sentence + presentation payload) + grade (TX + `reviews` row)
+- [x] Wire `review` into `http` / `main` with `schedule.DefaultParams()`
+- [x] `GET/POST /review` HTML; focus one Word; four grade buttons; post `card_id` + `grade` + `sentence_id` + `card_updated_at` (optimistic lock)
+- [x] Furigana toggle (default off; sessionStorage); Unfamiliar spans in Sentence; HTMX `#review-main` partial
+- [x] Tailwind CDN styling good enough for phone
+- [x] Phase 3 hardening: skip unpresentable Cards; shared `schedule.Params` on DB extract; UTC-day caps documented
 
-**Tests:** schedule pure G1–G9; review integration (temp DB): next order/caps, grade updates `due_at`, empty queue; HTTP smoke for `/review`.
+**Tests:** schedule pure G1–G9; review integration (temp DB): next order/caps, grade updates `due_at`, empty queue, stale double-submit; HTTP smoke for `/review`.
 
-**Acceptance:**
+**Acceptance (verified 2026-07-17):**
 
 ```bash
 go test ./internal/schedule/... ./internal/review/... -count=1
@@ -484,14 +487,14 @@ go test ./... -count=1
 
 ---
 
-### Phase 4: Frontend polish
+### Phase 4: Frontend polish — **done**
 
-- [ ] Dashboard: due count, last scrape, links
-- [ ] Browse articles/sentences
-- [ ] Theme polish `#3B82F6`, empty states, session progress
-- [ ] Keep CDN unless build is clearly needed
+- [x] Dashboard: due count, last scrape, links
+- [x] Browse articles/sentences
+- [x] Theme polish `#3B82F6`, empty states, session progress
+- [x] Keep CDN unless build is clearly needed
 
-**Acceptance:** mobile browser checklist (manual) + handler smoke tests.
+**Acceptance:** mobile browser checklist (manual) + handler smoke tests — `go test ./...` green (dashboard, articles list/detail, scrape HTMX HTML, auth gates).
 
 ---
 
@@ -555,6 +558,10 @@ go test ./... -count=1
 
 | Date | Note |
 |------|------|
+| 2026-07-17 | Phase 4 **complete**: live dashboard (`GET /`) with due/new, UTC session progress bars, last scrape, HTMX Scrape button; `GET /articles` + `GET /articles/:id` browse; shared nav/theme; empty states; `review.Stats` + `db` browse reads; handler smoke tests. Next: Phase 5 only. |
+| 2026-07-17 | Phase 3 **closed**: checklist + acceptance re-verified (`go test ./...`); README/AGENTS/plan status aligned; next work is Phase 4 only. |
+| 2026-07-17 | Phase 3 hardening: optimistic grade lock (`card_updated_at`), skip unpresentable Cards, HTMX `#review-main` partial + furigana sessionStorage, shared `schedule.Params` on DB extract, docs clarify UTC-day SessionLimit + NewPerDay on first grade. |
+| 2026-07-17 | Phase 3 complete: pure `internal/schedule` (NewCard/Apply/IsUnfamiliar, G1–G9), deep `internal/review` (next/grade, queue caps, newest Sentence spans), extract via `schedule.NewCard`, `GET/POST /review` HTML (4 grades, furigana toggle off by default, unfamiliar highlight). |
 | 2026-07-17 | Pre–Phase 3 architecture: pure `internal/schedule` + deep `internal/review` (next/grade); extract uses `schedule.NewCard`; ADR 0005; plan/HTTP/`sentence_id` locked. Implementation still Phase 3 checklist. |
 | 2026-07-17 | Phase 2 complete: `internal/scrape` RSS 2.0 parse + dual NHK fetch, `POST /api/scrape` (partial success JSON), fixtures under `testdata/rss/`, mock HTTP client (no network in tests), `IngestArticle` per item with `items_new` dedupe. Easy URL optional (`JKRT_NHK_EASY_RSS_URL`); soft-fail when empty. |
 | 2026-07-17 | Phase 1 complete: `migrations/001_init.sql`, `internal/db` (migrate + extract + unfamiliar), Kagome IPA analyze, words/sentence_words/cards on extract, fixture tests green. |

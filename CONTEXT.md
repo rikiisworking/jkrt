@@ -61,7 +61,7 @@ A Word highlighted in Sentence context when its Card matches: phase is new/learn
 _Avoid_: Unknown kanji, hard character, N1 word
 
 **Review queue**:
-The ordered list of upcoming Card Reviews. Due Cards first, then new Cards, subject to session/day caps so a fresh Scrape cannot flood the learner. v1 defaults: **20 new Cards per day**, **40 Reviews per session** (configurable later).
+The ordered list of upcoming Card Reviews. Due Cards first, then new Cards, subject to **UTC-day** caps so a fresh Scrape cannot flood the learner. v1 defaults: **20 new Cards per day** (first grade introduces a new Card), **40 Reviews per UTC day** (`SessionLimit` name kept for config continuity; not an ephemeral sitting id).
 _Avoid_: All unfamiliar words at once, deck (product metaphor only — we are not Anki)
 
 **Review result** (grade):

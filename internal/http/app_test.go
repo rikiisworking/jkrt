@@ -756,3 +756,484 @@ func TestScrapeMissingAnalyzer(t *testing.T) {
 		t.Fatalf("body: %s", body)
 	}
 }
+
+func TestReviewEmptyQueue(t *testing.T) {
+	app := newTestApp(t, false)
+	req := httptest.NewRequest(http.MethodGet, "/review", nil)
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatalf("Test: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "Queue empty") {
+		t.Fatalf("expected empty queue HTML, body=%s", body)
+	}
+}
+
+func TestReviewAuthRequired(t *testing.T) {
+	app := newTestApp(t, true)
+	req := httptest.NewRequest(http.MethodGet, "/review", nil)
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatalf("Test: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("status: got %d want 302", resp.StatusCode)
+	}
+	if resp.Header.Get("Location") != "/login" {
+		t.Fatalf("Location: %q", resp.Header.Get("Location"))
+	}
+}
+
+func TestReviewCardAndGrade(t *testing.T) {
+	app := newTestApp(t, false)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	if _, err := app.DB.IngestText(db.LearnerUserID, "経済政策を発表した。", app.Analyzer, now); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/review", nil)
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	if !strings.Contains(s, `name="card_id"`) || !strings.Contains(s, `name="grade"`) {
+		t.Fatalf("expected grade form, body=%s", s)
+	}
+	if !strings.Contains(s, `name="card_updated_at"`) {
+		t.Fatalf("expected card_updated_at lock token, body=%s", s)
+	}
+	if !strings.Contains(s, `hx-post="/review"`) {
+		t.Fatalf("expected HTMX form wiring")
+	}
+	if !strings.Contains(s, `class="unfamiliar"`) {
+		t.Fatalf("expected unfamiliar highlight, body=%s", s)
+	}
+	if !strings.Contains(s, "Furigana") {
+		t.Fatalf("expected furigana toggle")
+	}
+	// Furigana default off: CSS hides rt unless body.show-furi
+	if !strings.Contains(s, "body.show-furi") && !strings.Contains(s, "show-furi") {
+		t.Fatalf("expected furigana CSS toggle class")
+	}
+	// Sentence context present
+	if !strings.Contains(s, "経済") {
+		t.Fatalf("expected Japanese sentence content")
+	}
+	// All four grade buttons
+	for _, g := range []string{"again", "hard", "good", "easy"} {
+		if !strings.Contains(s, `value="`+g+`"`) {
+			t.Fatalf("missing grade button %s", g)
+		}
+	}
+
+	cardID := formHiddenValue(t, s, "card_id")
+	sentID := formHiddenValue(t, s, "sentence_id")
+
+	upd := formHiddenValue(t, s, "card_updated_at")
+	form := strings.NewReader(fmt.Sprintf("card_id=%s&sentence_id=%s&card_updated_at=%s&grade=good", cardID, sentID, upd))
+	preq := httptest.NewRequest(http.MethodPost, "/review", form)
+	preq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	presp, err := app.Fiber.Test(preq)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer presp.Body.Close()
+	if presp.StatusCode != http.StatusFound {
+		t.Fatalf("POST status: got %d want 302", presp.StatusCode)
+	}
+	if presp.Header.Get("Location") != "/review" {
+		t.Fatalf("Location: %q", presp.Header.Get("Location"))
+	}
+
+	var phase string
+	if err := app.DB.SQL().QueryRow(`SELECT phase FROM cards WHERE id = ?`, cardID).Scan(&phase); err != nil {
+		t.Fatal(err)
+	}
+	if phase != "learning" {
+		t.Fatalf("phase after grade: %s", phase)
+	}
+
+	var reviewCount int
+	if err := app.DB.SQL().QueryRow(`SELECT COUNT(1) FROM reviews WHERE card_id = ?`, cardID).Scan(&reviewCount); err != nil {
+		t.Fatal(err)
+	}
+	if reviewCount != 1 {
+		t.Fatalf("reviews rows: %d", reviewCount)
+	}
+}
+
+func TestReviewBadGrade(t *testing.T) {
+	app := newTestApp(t, false)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	if _, err := app.DB.IngestText(db.LearnerUserID, "経済政策を発表した。", app.Analyzer, now); err != nil {
+		t.Fatal(err)
+	}
+	res, err := app.Review.Next(db.LearnerUserID, now)
+	if err != nil || res.Empty {
+		t.Fatal("need a card")
+	}
+	form := strings.NewReader(fmt.Sprintf(
+		"card_id=%d&sentence_id=%d&card_updated_at=%s&grade=maybe",
+		res.Item.CardID, res.Item.SentenceID, res.Item.UpdatedAt,
+	))
+	req := httptest.NewRequest(http.MethodPost, "/review", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status: got %d want 400", resp.StatusCode)
+	}
+}
+
+func TestReviewMissingFields(t *testing.T) {
+	app := newTestApp(t, false)
+	form := strings.NewReader("grade=good")
+	req := httptest.NewRequest(http.MethodPost, "/review", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status: got %d want 400", resp.StatusCode)
+	}
+}
+
+func TestReviewCardNotFound(t *testing.T) {
+	app := newTestApp(t, false)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	if _, err := app.DB.IngestText(db.LearnerUserID, "経済政策を発表した。", app.Analyzer, now); err != nil {
+		t.Fatal(err)
+	}
+	res, err := app.Review.Next(db.LearnerUserID, now)
+	if err != nil || res.Empty {
+		t.Fatal("need a card for sentence_id")
+	}
+	form := strings.NewReader(fmt.Sprintf(
+		"card_id=99999&sentence_id=%d&card_updated_at=%s&grade=good",
+		res.Item.SentenceID, res.Item.UpdatedAt,
+	))
+	req := httptest.NewRequest(http.MethodPost, "/review", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status: got %d want 404", resp.StatusCode)
+	}
+}
+
+func TestReviewHTMXReturnsHTML(t *testing.T) {
+	app := newTestApp(t, false)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	if _, err := app.DB.IngestText(db.LearnerUserID, "経済政策を発表した。", app.Analyzer, now); err != nil {
+		t.Fatal(err)
+	}
+	res, err := app.Review.Next(db.LearnerUserID, now)
+	if err != nil || res.Empty {
+		t.Fatal("need card")
+	}
+	form := strings.NewReader(fmt.Sprintf(
+		"card_id=%d&sentence_id=%d&card_updated_at=%s&grade=good",
+		res.Item.CardID, res.Item.SentenceID, res.Item.UpdatedAt,
+	))
+	req := httptest.NewRequest(http.MethodPost, "/review", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	// HTMX path returns 200 partial for #review-main (not full document, not 302)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d want 200", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	if strings.Contains(s, "<!DOCTYPE") {
+		t.Fatalf("HTMX should return partial, not full document")
+	}
+	if !strings.Contains(s, "Queue empty") && !strings.Contains(s, `name="card_id"`) && !strings.Contains(s, "unfamiliar") {
+		t.Fatalf("expected review partial after HTMX grade, body=%s", s)
+	}
+}
+
+func TestReviewDoubleSubmitStaleIsIdempotent(t *testing.T) {
+	app := newTestApp(t, false)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	if _, err := app.DB.IngestText(db.LearnerUserID, "経済政策を発表した。", app.Analyzer, now); err != nil {
+		t.Fatal(err)
+	}
+	res, err := app.Review.Next(db.LearnerUserID, now)
+	if err != nil || res.Empty {
+		t.Fatal("need card")
+	}
+	formBody := fmt.Sprintf(
+		"card_id=%d&sentence_id=%d&card_updated_at=%s&grade=good",
+		res.Item.CardID, res.Item.SentenceID, res.Item.UpdatedAt,
+	)
+	// First grade
+	req1 := httptest.NewRequest(http.MethodPost, "/review", strings.NewReader(formBody))
+	req1.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp1, err := app.Fiber.Test(req1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp1.Body.Close()
+	if resp1.StatusCode != http.StatusFound {
+		t.Fatalf("first grade: %d", resp1.StatusCode)
+	}
+	// Second grade with same token must not double-apply
+	req2 := httptest.NewRequest(http.MethodPost, "/review", strings.NewReader(formBody))
+	req2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp2, err := app.Fiber.Test(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusFound {
+		t.Fatalf("stale grade should re-next (302), got %d", resp2.StatusCode)
+	}
+	var n int
+	if err := app.DB.SQL().QueryRow(`SELECT COUNT(1) FROM reviews WHERE card_id = ?`, res.Item.CardID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("expected one review row after double submit, got %d", n)
+	}
+	var phase string
+	var step int
+	if err := app.DB.SQL().QueryRow(`SELECT phase, learning_step FROM cards WHERE id = ?`, res.Item.CardID).Scan(&phase, &step); err != nil {
+		t.Fatal(err)
+	}
+	// new+Good once → learning step 0 (not step 1 from double Good)
+	if phase != "learning" || step != 0 {
+		t.Fatalf("after double submit: phase=%s step=%d (want learning/0)", phase, step)
+	}
+}
+
+// formHiddenValue extracts value="..." from <input ... name="NAME" value="...">
+// (value may appear before or after name).
+func formHiddenValue(t *testing.T, htmlBody, name string) string {
+	t.Helper()
+	// Prefer pattern: name="X" ... value="Y" within the same tag
+	marker := `name="` + name + `"`
+	i := strings.Index(htmlBody, marker)
+	if i < 0 {
+		t.Fatalf("missing name=%q", name)
+	}
+	// Expand to nearest <input ...> bounds
+	tagStart := strings.LastIndex(htmlBody[:i+1], "<input")
+	if tagStart < 0 {
+		tagStart = i
+	}
+	tagEnd := strings.Index(htmlBody[i:], ">")
+	if tagEnd < 0 {
+		t.Fatalf("unclosed input for %s", name)
+	}
+	tag := htmlBody[tagStart : i+tagEnd]
+	const pref = `value="`
+	j := strings.Index(tag, pref)
+	if j < 0 {
+		t.Fatalf("no value in input tag %q", tag)
+	}
+	rest := tag[j+len(pref):]
+	k := strings.Index(rest, `"`)
+	if k < 0 {
+		t.Fatal("unclosed value")
+	}
+	return rest[:k]
+}
+
+func TestDashboardEmpty(t *testing.T) {
+	app := newTestApp(t, false)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatalf("Test: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	for _, want := range []string{
+		"Japanese Kanji Reading Trainer",
+		"Due",
+		"Session progress",
+		"Scrape NHK",
+		"No articles yet",
+		`hx-post="/api/scrape"`,
+		`href="/articles"`,
+		`href="/review"`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("missing %q in dashboard", want)
+		}
+	}
+}
+
+func TestDashboardWithData(t *testing.T) {
+	app := newTestApp(t, false)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	if _, err := app.DB.IngestText(db.LearnerUserID, "経済政策を発表した。", app.Analyzer, now); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	if strings.Contains(s, "No articles yet") {
+		t.Fatal("should not show empty library hint after ingest")
+	}
+	if !strings.Contains(s, "articles") {
+		t.Fatal("expected article count section")
+	}
+	// New cards should show in new count (not zero)
+	if !strings.Contains(s, "New in queue") {
+		t.Fatal("expected new queue label")
+	}
+}
+
+func TestArticlesListEmpty(t *testing.T) {
+	app := newTestApp(t, false)
+	req := httptest.NewRequest(http.MethodGet, "/articles", nil)
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "No articles") {
+		t.Fatalf("expected empty articles state, body=%s", body)
+	}
+}
+
+func TestArticlesListAndDetail(t *testing.T) {
+	app := newTestApp(t, false)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	res, err := app.DB.IngestText(db.LearnerUserID, "経済政策を発表した。", app.Analyzer, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/articles", nil)
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list status: %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	if !strings.Contains(s, fmt.Sprintf(`/articles/%d`, res.ArticleID)) {
+		t.Fatalf("expected link to article %d", res.ArticleID)
+	}
+	if !strings.Contains(s, "manual") && !strings.Contains(s, db.ManualSourceName) {
+		t.Fatalf("expected source name in list")
+	}
+
+	dreq := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/articles/%d", res.ArticleID), nil)
+	dresp, err := app.Fiber.Test(dreq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dresp.Body.Close()
+	if dresp.StatusCode != http.StatusOK {
+		t.Fatalf("detail status: %d", dresp.StatusCode)
+	}
+	dbody, _ := io.ReadAll(dresp.Body)
+	ds := string(dbody)
+	if !strings.Contains(ds, "経済") {
+		t.Fatalf("expected sentence text, body=%s", ds)
+	}
+	if !strings.Contains(ds, "Sentence") {
+		t.Fatal("expected sentence labels")
+	}
+}
+
+func TestArticleNotFound(t *testing.T) {
+	app := newTestApp(t, false)
+	req := httptest.NewRequest(http.MethodGet, "/articles/99999", nil)
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status: got %d want 404", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "not found") {
+		t.Fatalf("body: %s", body)
+	}
+}
+
+func TestArticlesAuthRequired(t *testing.T) {
+	app := newTestApp(t, true)
+	req := httptest.NewRequest(http.MethodGet, "/articles", nil)
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("status: got %d want 302", resp.StatusCode)
+	}
+	if resp.Header.Get("Location") != "/login" {
+		t.Fatalf("Location: %q", resp.Header.Get("Location"))
+	}
+}
+
+func TestScrapeHTMXReturnsHTML(t *testing.T) {
+	client := loadRSSFixtures(t)
+	app := newTestAppOpts(t, false, filepath.Join("..", "..", "web", "static"), client)
+	req := httptest.NewRequest(http.MethodPost, "/api/scrape", nil)
+	req.Header.Set("HX-Request", "true")
+	resp, err := app.Fiber.Test(req, 10000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	if !strings.Contains(s, "Scrape finished") {
+		t.Fatalf("expected HTML summary, body=%s", s)
+	}
+	if strings.HasPrefix(strings.TrimSpace(s), "{") {
+		t.Fatal("HTMX scrape must not return raw JSON")
+	}
+}

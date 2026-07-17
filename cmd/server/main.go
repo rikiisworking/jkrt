@@ -11,6 +11,8 @@ import (
 	"github.com/rikiisworking/jkrt/internal/config"
 	"github.com/rikiisworking/jkrt/internal/db"
 	jkrthttp "github.com/rikiisworking/jkrt/internal/http"
+	"github.com/rikiisworking/jkrt/internal/review"
+	"github.com/rikiisworking/jkrt/internal/schedule"
 )
 
 func main() {
@@ -70,6 +72,11 @@ func run() error {
 		staticDir = ""
 	}
 
+	// Shared SM-2 params for extract (NewCard) and Review (Apply / queue caps).
+	params := schedule.DefaultParams()
+	database.SetScheduleParams(params)
+	rev := review.New(database, params)
+
 	app := jkrthttp.New(jkrthttp.Options{
 		Config:    cfg,
 		Store:     store,
@@ -77,6 +84,7 @@ func run() error {
 		StaticDir: staticDir,
 		DB:        database,
 		Analyzer:  ana,
+		Review:    rev,
 	})
 
 	log.Printf("jkrt listening on %s (auth=%v)", cfg.Addr, cfg.AuthEnabled)

@@ -2,18 +2,19 @@
 
 Personal web app for **N2 → N1 reading**: pull **NHK main + NHK Easy RSS**, extract **words** (lemma + reading), and review them with **Anki-like SM-2** scheduling in real sentence context.
 
-> **Status:** Phase 2 complete — dual NHK RSS scrape + ingest.  
-> Phase 3 architecture locked ([ADR 0005](docs/adr/0005-pure-schedule-deep-review.md)): pure `schedule` + deep `review` — implementation next.  
-> See [`DEVELOPMENT_PLAN.md`](DEVELOPMENT_PLAN.md) and [`CONTEXT.md`](CONTEXT.md).
+> **Status:** Phase 4 complete — dashboard + article browse.  
+> Next: Phase 5 auth harden + tunnel docs. See [`DEVELOPMENT_PLAN.md`](DEVELOPMENT_PLAN.md) and [`CONTEXT.md`](CONTEXT.md).  
+> Architecture: pure `schedule` + deep `review` ([ADR 0005](docs/adr/0005-pure-schedule-deep-review.md)).
 
 ## Features (shipped / planned)
 
 - [x] Local Go server with password auth (HMAC session cookie)
 - [x] Morphological analysis → kanji-bearing **Words** + Card rows
 - [x] User-triggered scrape of **both** NHK feeds (RSS only — no HTML page scrape)
-- [ ] Review one Word at a time (Again / Hard / Good / Easy)
-- [ ] Sentence context with unfamiliar words highlighted; furigana on toggle
-- [ ] iPhone via Cloudflare Tunnel (auth required)
+- [x] Review one Word at a time (Again / Hard / Good / Easy) with SM-2 scheduling
+- [x] Sentence context with unfamiliar words highlighted; furigana on toggle (default off)
+- [x] Dashboard / browse polish (Phase 4)
+- [ ] iPhone via Cloudflare Tunnel (auth required; Phase 5 docs)
 
 ## Tech
 
@@ -21,7 +22,7 @@ Personal web app for **N2 → N1 reading**: pull **NHK main + NHK Easy RSS**, ex
 |-------|--------|
 | Backend | Go + Fiber |
 | DB | SQLite (`modernc.org/sqlite`) |
-| Frontend | HTMX + Tailwind CDN (Phase 0–3) |
+| Frontend | HTMX + Tailwind CDN (Phase 0–4) |
 | Schedule | SM-2-ish (not Anki sync) |
 | Deploy | Local + cloudflared |
 
@@ -42,8 +43,11 @@ Personal web app for **N2 → N1 reading**: pull **NHK main + NHK Easy RSS**, ex
 ```bash
 export JKRT_AUTH=off
 go run ./cmd/server
-# http://localhost:8080/health  → {"status":"ok"}
-# http://localhost:8080/        → placeholder HTML
+# http://localhost:8080/health     → {"status":"ok"}
+# http://localhost:8080/           → dashboard (due/new, scrape, links)
+# http://localhost:8080/review     → next Card or empty queue
+# http://localhost:8080/articles   → browse Articles / Sentences
+# POST /api/scrape                 → dual NHK RSS ingest (live network)
 ```
 
 ### Auth on (required before any public tunnel)

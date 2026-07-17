@@ -10,12 +10,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rikiisworking/jkrt/internal/schedule"
+
 	_ "modernc.org/sqlite"
 )
 
 // DB is the application database handle.
 type DB struct {
 	sql *sql.DB
+	// cardParams seeds new Cards via schedule.NewCard. Nil → DefaultParams().
+	// Set with SetScheduleParams so extract and Review share one config.
+	cardParams *schedule.Params
 }
 
 // Open opens (or creates) SQLite at dbPath and applies *.sql files from migrationsDir
@@ -47,6 +52,24 @@ func Open(dbPath, migrationsDir string) (*DB, error) {
 	}
 
 	return &DB{sql: sqlDB}, nil
+}
+
+// SetScheduleParams sets the SM-2 params used when extract creates new Cards.
+// Call once at startup with the same Params passed to review.New.
+func (d *DB) SetScheduleParams(p schedule.Params) {
+	if d == nil {
+		return
+	}
+	cp := p
+	d.cardParams = &cp
+}
+
+// scheduleParams returns configured params or schedule.DefaultParams().
+func (d *DB) scheduleParams() schedule.Params {
+	if d != nil && d.cardParams != nil {
+		return *d.cardParams
+	}
+	return schedule.DefaultParams()
 }
 
 // SQL returns the underlying *sql.DB.

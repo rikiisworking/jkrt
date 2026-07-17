@@ -754,35 +754,6 @@ func TestExtractFixtureExactWords(t *testing.T) {
 	}
 }
 
-func TestIsUnfamiliarBoundaryAndUnknownPhase(t *testing.T) {
-	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
-	future := now.Add(time.Hour)
-	past := now.Add(-time.Second)
-
-	// interval just under 21 → unfamiliar; exactly 21 and not due → familiar
-	if !db.IsUnfamiliar("review", 20.999, future, now) {
-		t.Fatal("interval < 21 should be unfamiliar")
-	}
-	if db.IsUnfamiliar("review", 21.0, future, now) {
-		t.Fatal("interval == 21 and not due should be familiar")
-	}
-	// due wins even when mature
-	if !db.IsUnfamiliar("review", 100, past, now) {
-		t.Fatal("due mature card should be unfamiliar")
-	}
-	// unknown phase, not due, no young-review branch
-	if db.IsUnfamiliar("graduated", 100, future, now) {
-		t.Fatal("unknown phase not due should be familiar")
-	}
-	if !db.IsUnfamiliar("graduated", 100, past, now) {
-		t.Fatal("unknown phase due should still be unfamiliar via due_at")
-	}
-	// learning always unfamiliar even if due far future and huge interval
-	if !db.IsUnfamiliar("learning", 999, future, now) {
-		t.Fatal("learning always unfamiliar")
-	}
-}
-
 func TestFindMigrationsDirFromPackageCwd(t *testing.T) {
 	// OpenStore / empty migrationsDir rely on walking up from cwd.
 	// When tests run as `go test ./internal/db`, cwd is this package dir.
