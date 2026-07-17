@@ -33,8 +33,8 @@
 
 | Field | Value |
 |-------|--------|
-| **Current phase** | Phase 1 — Data layer, analyzer, Cards |
-| **Repo state** | Phase 0 complete: Fiber server, health, static placeholder, bcrypt + signed session auth |
+| **Current phase** | Phase 2 — RSS Scrape (both sources) |
+| **Repo state** | Phase 1 complete: full SQLite schema, Kagome analyze, words/cards extract, unfamiliar helper |
 | **Last updated** | 2026-07-17 |
 | **Agent-ready** | Yes (pick-ones locked, SM-2 spec, HTTP surface, acceptance curls) |
 
@@ -379,14 +379,14 @@ curl -sS -b /tmp/jkrt-cj -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8080/
 
 ---
 
-### Phase 1: Data layer, analyzer, Cards — **current**
+### Phase 1: Data layer, analyzer, Cards — **done**
 
-- [ ] `migrations/001_init.sql` + apply on startup
-- [ ] Kagome wrapper → candidates + spans
-- [ ] Persist words, sentence_words, cards (new-card defaults from sm2-spec)
-- [ ] Unfamiliar helper implements locked predicate
-- [ ] Empty reading skipped
-- [ ] No live RSS (string/fixture analyze only)
+- [x] `migrations/001_init.sql` + apply on startup
+- [x] Kagome wrapper → candidates + spans
+- [x] Persist words, sentence_words, cards (new-card defaults from sm2-spec)
+- [x] Unfamiliar helper implements locked predicate
+- [x] Empty reading skipped
+- [x] No live RSS (string/fixture analyze only)
 
 **Tests:** analyze fixture sentence; UNIQUE(lemma, reading); skip empty reading; card row on extract.
 
@@ -401,7 +401,7 @@ go test ./internal/analyze/... ./internal/db/... -count=1
 
 ---
 
-### Phase 2: RSS Scrape (both sources)
+### Phase 2: RSS Scrape (both sources) — **current**
 
 - [ ] Seed `news_sources` rows
 - [ ] `POST /api/scrape` both feeds; parse; store; analyze
@@ -517,6 +517,7 @@ go test ./... -count=1
 
 | Date | Note |
 |------|------|
+| 2026-07-17 | Phase 1 complete: `migrations/001_init.sql`, `internal/db` (migrate + extract + unfamiliar), Kagome IPA analyze, words/sentence_words/cards on extract, fixture tests green. |
 | 2026-07-17 | Phase 0 complete: go module, Fiber, `/health`, static placeholder (Tailwind CDN + Noto Sans JP), bcrypt + HMAC session auth, acceptance curls green. |
 | 2026-07-17 | Agent-hardening: sm2-spec, HTTP table, locked pick-ones, acceptance curls, CDN rule, feed URL notes. |
 | 2026-07-17 | Grill: Word unit, Kagome path, dual NHK RSS-only, SM-2 4-button. |

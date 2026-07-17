@@ -93,7 +93,7 @@ golangci-lint run   # when configured
 
 ## Current status
 
-**Phase 0 (Setup) — complete.** Fiber server, health, static placeholder, password auth. **Next: Phase 1** (schema, Kagome, words/cards).
+**Phase 1 (Data layer, analyzer, Cards) — complete.** Full SQLite schema, Kagome IPA Word candidates, extract → words/cards, unfamiliar helper. **Next: Phase 2** (dual NHK RSS scrape).
 
 ## Safety
 

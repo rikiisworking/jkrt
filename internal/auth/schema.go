@@ -1,10 +1,7 @@
 package auth
 
-// UsersTableDDL is the canonical Phase 0 users table definition.
-//
-// Phase 1 migrations/001_init.sql MUST use the same columns and types for
-// `users` (prefer CREATE TABLE IF NOT EXISTS) so existing Phase 0 databases
-// keep working after upgrade.
+// UsersTableDDL documents the users table shape for reference.
+// Runtime schema is applied by migrations/001_init.sql (same columns/types).
 //
 // Matches DEVELOPMENT_PLAN.md: id INTEGER PK, password_hash TEXT, created_at TEXT.
 const UsersTableDDL = `

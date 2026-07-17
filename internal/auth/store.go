@@ -5,35 +5,33 @@ import (
 	"fmt"
 	"time"
 
-	_ "modernc.org/sqlite"
+	appdb "github.com/rikiisworking/jkrt/internal/db"
 )
 
 // Store persists the single Learner (user id = 1) password hash.
 type Store struct {
-	db *sql.DB
+	db    *sql.DB
+	owned bool // when true, Close() closes the underlying *sql.DB
 }
 
-// OpenStore opens (or creates) the SQLite database and ensures the users table exists.
-// Phase 0 only needs users; full schema arrives in Phase 1 migrations using UsersTableDDL.
+// NewStore wraps an existing database (migrations already applied). Caller owns Close.
+func NewStore(sqlDB *sql.DB) *Store {
+	return &Store{db: sqlDB, owned: false}
+}
+
+// OpenStore opens SQLite, applies Phase 1 migrations (including users), and returns a Store
+// that owns the connection (Close closes the DB). Used by tests and simple callers.
 func OpenStore(dbPath string) (*Store, error) {
-	db, err := sql.Open("sqlite", dbPath)
+	d, err := appdb.Open(dbPath, "")
 	if err != nil {
-		return nil, fmt.Errorf("open sqlite: %w", err)
+		return nil, err
 	}
-	// One connection is enough for the single-user app and avoids lock surprises in tests.
-	db.SetMaxOpenConns(1)
-
-	if _, err := db.Exec(UsersTableDDL); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("create users table: %w", err)
-	}
-
-	return &Store{db: db}, nil
+	return &Store{db: d.SQL(), owned: true}, nil
 }
 
-// Close closes the underlying database.
+// Close closes the underlying database when this Store owns it.
 func (s *Store) Close() error {
-	if s == nil || s.db == nil {
+	if s == nil || s.db == nil || !s.owned {
 		return nil
 	}
 	return s.db.Close()

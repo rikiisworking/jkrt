@@ -8,6 +8,7 @@ import (
 
 	"github.com/rikiisworking/jkrt/internal/auth"
 	"github.com/rikiisworking/jkrt/internal/config"
+	"github.com/rikiisworking/jkrt/internal/db"
 	jkrthttp "github.com/rikiisworking/jkrt/internal/http"
 )
 
@@ -23,26 +24,35 @@ func run() error {
 		return fmt.Errorf("config: %w", err)
 	}
 
+	workdir, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	migrationsDir := filepath.Join(workdir, "migrations")
+	if _, err := os.Stat(filepath.Join(migrationsDir, "001_init.sql")); err != nil {
+		// Fall back to walking up for go.mod / migrations.
+		if found, findErr := db.FindMigrationsDir(); findErr == nil {
+			migrationsDir = found
+		}
+	}
+
+	database, err := db.Open(cfg.DBPath, migrationsDir)
+	if err != nil {
+		return fmt.Errorf("db: %w", err)
+	}
+	defer func() { _ = database.Close() }()
+
 	var store *auth.Store
 	var sessions *auth.Manager
 
 	if cfg.AuthEnabled {
-		store, err = auth.OpenStore(cfg.DBPath)
-		if err != nil {
-			return fmt.Errorf("db: %w", err)
-		}
-		defer func() { _ = store.Close() }()
-
+		store = auth.NewStore(database.SQL())
 		if err := auth.Bootstrap(store, true, cfg.Password); err != nil {
 			return fmt.Errorf("auth bootstrap: %w", err)
 		}
 		sessions = auth.NewManager(cfg.SessionSecret, cfg.SessionTTL)
 	}
 
-	workdir, err := os.Getwd()
-	if err != nil {
-		return err
-	}
 	staticDir := filepath.Join(workdir, "web", "static")
 	if _, err := os.Stat(staticDir); err != nil {
 		// Allow running from other cwd if static is missing; handlers fall back to inline HTML.

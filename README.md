@@ -2,14 +2,14 @@
 
 Personal web app for **N2 → N1 reading**: pull **NHK main + NHK Easy RSS**, extract **words** (lemma + reading), and review them with **Anki-like SM-2** scheduling in real sentence context.
 
-> **Status:** Phase 0 complete — Fiber server, health, static placeholder, password auth.  
+> **Status:** Phase 1 complete — schema, Kagome analyze, words/cards extract.  
 > See [`DEVELOPMENT_PLAN.md`](DEVELOPMENT_PLAN.md) and [`CONTEXT.md`](CONTEXT.md).
 
 ## Features (shipped / planned)
 
 - [x] Local Go server with password auth (HMAC session cookie)
+- [x] Morphological analysis → kanji-bearing **Words** + Card rows
 - [ ] User-triggered scrape of **both** NHK feeds (RSS only — no HTML page scrape)
-- [ ] Morphological analysis → kanji-bearing **Words**
 - [ ] Review one Word at a time (Again / Hard / Good / Easy)
 - [ ] Sentence context with unfamiliar words highlighted; furigana on toggle
 - [ ] iPhone via Cloudflare Tunnel (auth required)
@@ -69,7 +69,7 @@ go test ./... -count=1
 | Env | Default | Notes |
 |-----|---------|--------|
 | `JKRT_ADDR` | `:8080` | Listen address |
-| `JKRT_DB_PATH` | `./jkrt.db` | SQLite (users table for auth) |
+| `JKRT_DB_PATH` | `./jkrt.db` | SQLite (full schema via `migrations/`) |
 | `JKRT_AUTH` | `on` | `off` only for local dev |
 | `JKRT_PASSWORD` | — | Bootstrap user 1 if no row yet |
 | `JKRT_SESSION_SECRET` | — | Required when auth on (≥32 bytes) |
