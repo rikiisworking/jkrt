@@ -206,4 +206,68 @@ func TestBrowseNilDB(t *testing.T) {
 	if _, err := d.LibraryCounts(1); err == nil {
 		t.Fatal("LibraryCounts nil want error")
 	}
+	if _, _, err := d.GetSentence(1, 1); err == nil {
+		t.Fatal("GetSentence nil want error")
+	}
+}
+
+// GetSentence is the ownership read used by extract HTTP after ExtractSentenceForArticle.
+func TestGetSentenceFoundNotFoundAndMismatch(t *testing.T) {
+	d := openTestDB(t)
+	seedUser(t, d)
+	a, err := analyze.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	a1, err := d.StoreArticle(db.LearnerUserID, db.SourceRef{Name: "s1"}, db.ArticleInput{
+		ExternalID: "e1", RawText: "経済政策を発表した。", FetchedAt: now,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a2, err := d.StoreArticle(db.LearnerUserID, db.SourceRef{Name: "s2"}, db.ArticleInput{
+		ExternalID: "e2", RawText: "市場は反応した。", FetchedAt: now,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sid1 int64
+	if err := d.SQL().QueryRow(`SELECT id FROM sentences WHERE article_id = ?`, a1.ArticleID).Scan(&sid1); err != nil {
+		t.Fatal(err)
+	}
+
+	// Unextracted: found, not Extracted, WordCount 0
+	s, found, err := d.GetSentence(a1.ArticleID, sid1)
+	if err != nil || !found {
+		t.Fatalf("found=%v err=%v", found, err)
+	}
+	if s.ID != sid1 || s.Text == "" {
+		t.Fatalf("item: %+v", s)
+	}
+	if s.Extracted || s.WordCount != 0 {
+		t.Fatalf("store-only: %+v", s)
+	}
+
+	// Wrong article ownership → not found (same as HTTP 404 path)
+	if _, found, err := d.GetSentence(a2.ArticleID, sid1); err != nil || found {
+		t.Fatalf("mismatch: found=%v err=%v", found, err)
+	}
+	if _, found, err := d.GetSentence(a1.ArticleID, 99999); err != nil || found {
+		t.Fatalf("missing id: found=%v err=%v", found, err)
+	}
+
+	if _, err := d.ExtractSentence(db.LearnerUserID, sid1, a, now); err != nil {
+		t.Fatal(err)
+	}
+	s2, found, err := d.GetSentence(a1.ArticleID, sid1)
+	if err != nil || !found {
+		t.Fatalf("after extract: found=%v err=%v", found, err)
+	}
+	if !s2.Extracted || s2.ExtractedAt == "" {
+		t.Fatalf("want extracted: %+v", s2)
+	}
+	if s2.WordCount < 1 {
+		t.Fatalf("WordCount after extract: %d", s2.WordCount)
+	}
 }
