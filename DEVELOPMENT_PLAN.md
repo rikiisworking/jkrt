@@ -33,10 +33,10 @@
 
 | Field | Value |
 |-------|--------|
-| **Current phase** | Phase 2 — RSS Scrape (both sources) |
-| **Repo state** | Phase 1 complete: full SQLite schema, Kagome analyze, words/cards extract, unfamiliar helper |
+| **Current phase** | Phase 3 — Review + SM-2 |
+| **Repo state** | Phase 2 complete. Phase 3 **module architecture locked** (ADR 0005): pure `schedule` + deep `review` (next/grade); implementation not started |
 | **Last updated** | 2026-07-17 |
-| **Agent-ready** | Yes (pick-ones locked, SM-2 spec, HTTP surface, acceptance curls) |
+| **Agent-ready** | Yes (pick-ones locked, SM-2 spec, Review/schedule seams, HTTP surface, acceptance curls) |
 
 ---
 
@@ -181,9 +181,37 @@ Migrations: `migrations/001_init.sql`, applied on startup.
 
 ## Scheduler
 
-**Normative:** [`docs/sm2-spec.md`](docs/sm2-spec.md).
+**Normative:** [`docs/sm2-spec.md`](docs/sm2-spec.md). ADR: [`docs/adr/0005-pure-schedule-deep-review.md`](docs/adr/0005-pure-schedule-deep-review.md).
 
-Package: `internal/schedule` — pure functions, golden tests G1–G9 from the spec.
+### `internal/schedule` (pure)
+
+- **No I/O.** Golden tests G1–G9 from the spec.
+- **`Params` / `DefaultParams()`** — all normative knobs (learning steps, ease, intervals, `NewPerDay`, `SessionLimit`, …). v1: construct review with `DefaultParams()`; env overrides (`JKRT_NEW_PER_DAY`, etc.) optional later without changing next/grade.
+- **`NewCard(params, now) → state`** — seed fields for extract (`phase=new`, ease, `due_at=now`, …). **`db.IngestArticle` must use this** — do not re-fork defaults in SQL.
+- **`Apply(params, state, grade, now) → state`** — single pure transition; id-free card state (phase, learning_step, interval_days, ease, due_at, reps, lapses).
+- **`IsUnfamiliar(state, now) bool`** — locked highlight predicate (spec). Lives here, not in `db`.
+
+### `internal/review` (deep)
+
+Small external interface (HTTP + tests cross the same seam):
+
+| Op | Behaviour |
+|----|-----------|
+| **next**(learner, now) | Review queue: due first (`due_at <= now`, `phase != new`, order `due_at` ASC), then new under `SessionLimit` + `NewPerDay` (count new **shown** today, UTC). Empty queue → **empty result, not an error**. |
+| **grade**(card_id, sentence_id, grade, now) | Validate grade wire value; validate Sentence is linked to Card’s Word; `schedule.Apply`; update `cards`; insert `reviews` with **that** `sentence_id`. Errors if missing card / bad link / bad grade. **Does not** return the next Card — caller calls **next** again (HTTP: 302 GET `/review`). |
+
+- **Owns Review SQL** on concrete SQLite (`*sql.DB` / `*db.DB` handle). No `ReviewStore` interface until a second adapter exists.
+- **next presentation payload** (no HTML): Sentence text; ordered spans (surface, char range, Word identity, Reading, unfamiliar?); focus Card/Word. Templates own furigana CSS/toggle.
+- Queue **selection** implemented in SQL inside review; only caps/defaults come from `schedule.Params`.
+
+### `internal/http` (shallow)
+
+- GET/POST `/review` call review next/grade only. No queue SQL in handlers.
+
+### `internal/db` (ingest unchanged shape)
+
+- Keep deep **`IngestArticle`** — do not split into shallow services.
+- New Card rows: persist **`schedule.NewCard`** output. Remove package-local forked ease/unfamiliar once schedule exists.
 
 ---
 
@@ -192,7 +220,7 @@ Package: `internal/schedule` — pure functions, golden tests G1–G9 from the s
 - Library: **Kagome v2 + IPA dictionary** (pin module version in go.mod when added).
 - Tokenize Sentence → lemma, reading, surface, span.
 - Keep Token iff contains ≥1 kanji **and** reading non-empty.
-- Upsert `words`; insert `sentence_words` with spans; upsert `cards` for user 1 per sm2-spec new-card row.
+- Upsert `words`; insert `sentence_words` with spans; upsert `cards` for user 1 from **`schedule.NewCard`** (sm2-spec new-card row).
 - Fixture Japanese strings in `testdata/analyze/` for unit tests.
 
 Example fixture sentence (for tests):
@@ -316,12 +344,13 @@ When `JKRT_AUTH=on`, unauthenticated requests to protected routes → **401** (A
 | POST | `/login` | no | 0 | form `password` | `302` `/` + Set-Cookie; bad → `401` HTML/form error |
 | POST | `/logout` | yes | 0 | — | `302` `/login` clear cookie |
 | POST | `/api/scrape` | yes | 2 | empty body | `200` JSON `{ "sources": [ { "name", "ok", "items_new", "error?" } ] }` |
-| GET | `/review` | yes | 3 | — | `200` HTML next card+sentence or empty state |
-| POST | `/review` | yes | 3 | form/JSON `card_id`, `grade` | `302` `/review` or `200` HTMX partial |
+| GET | `/review` | yes | 3 | — | `200` HTML from **next** payload (focus Word + Sentence spans) or empty state |
+| POST | `/review` | yes | 3 | form/JSON `card_id`, `grade`, **`sentence_id`** | `302` `/review` (re-**next**) or `200` HTMX partial after re-**next**; bad input → 4xx |
 
 \*When auth off, `/` is open.
 
-**Grade values:** `again`, `hard`, `good`, `easy` (lowercase).
+**Grade values:** `again`, `hard`, `good`, `easy` (lowercase).  
+**`sentence_id`:** the Sentence shown with the Card (from **next**); stored on the `reviews` row so history matches on-screen context.
 
 Later phases may add dashboard routes; do not invent Phase 0–3 routes beyond this table without updating this file.
 
@@ -387,8 +416,13 @@ curl -sS -b /tmp/jkrt-cj -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8080/
 - [x] Unfamiliar helper implements locked predicate
 - [x] Empty reading skipped
 - [x] No live RSS (string/fixture analyze only)
+- [x] Deep Article ingest interface (pre–Phase 2):
+  - `db.IngestArticle` — Source + Article → Sentences → Words/Cards; returns `IngestCreated` \| `IngestExists`
+  - `db.IngestText` — library/manual path (unique external_id; always Created)
+  - Dedupe on `(source_id, external_id)`: Exists skips re-extract (no analyze)
+  - Single SQL path via shared querier helpers (no public/tx twin pairs)
 
-**Tests:** analyze fixture sentence; UNIQUE(lemma, reading); skip empty reading; card row on extract.
+**Tests:** analyze fixture sentence; UNIQUE(lemma, reading); skip empty reading; card row on extract; IngestArticle dedupe.
 
 **Acceptance:**
 
@@ -397,17 +431,17 @@ go test ./internal/analyze/... ./internal/db/... -count=1
 # all pass; includes Japanese fixture 経済政策を発表した。
 ```
 
-**Deliverable:** library path string → sentences → words/cards in SQLite.
+**Deliverable:** `IngestText` / `IngestArticle` → sentences → words/cards in SQLite.
 
 ---
 
-### Phase 2: RSS Scrape (both sources) — **current**
+### Phase 2: RSS Scrape (both sources) — **done**
 
-- [ ] Seed `news_sources` rows
-- [ ] `POST /api/scrape` both feeds; parse; store; analyze
-- [ ] Fixtures `testdata/rss/nhk_main_sample.xml`, `nhk_easy_sample.xml`
-- [ ] Mockable HTTP client; timeouts; partial success JSON
-- [ ] Dedupe stable
+- [x] Seed `news_sources` rows (or `EnsureSource` at scrape time)
+- [x] `POST /api/scrape` both feeds; parse; call **`IngestArticle`** per item (not ad-hoc SQL)
+- [x] Fixtures `testdata/rss/nhk_main_sample.xml`, `nhk_easy_sample.xml`
+- [x] Mockable HTTP client; timeouts; partial success JSON
+- [x] Dedupe stable via `IngestExists` (count `items_new` from Created only)
 
 **Tests:** offline ingest from fixtures; **zero** network dials in tests.
 
@@ -423,21 +457,25 @@ go test ./internal/scrape/... ./... -count=1
 
 ---
 
-### Phase 3: Review + SM-2
+### Phase 3: Review + SM-2 — **current**
 
-- [ ] `internal/schedule` full sm2-spec + G1–G9 tests
-- [ ] Queue due then new; caps
-- [ ] `GET/POST /review` HTML; focus one Word; four buttons
-- [ ] Furigana toggle (default off)
-- [ ] Newest sentence context
+**Architecture locked (2026-07-17):** ADR 0005 + Scheduler/Review sections above. Implement in this order.
+
+- [x] Lock pure `schedule` + deep `review` (next/grade) seams; doc + ADR
+- [ ] `internal/schedule`: `Params`/`DefaultParams`, `NewCard`, `Apply`, `IsUnfamiliar`; G1–G9
+- [ ] `db` extract: new Cards from `schedule.NewCard`; drop forked `StartingEase` / `db.IsUnfamiliar`
+- [ ] `internal/review`: next (queue SQL + newest Sentence + presentation payload) + grade (TX + `reviews` row)
+- [ ] Wire `review` into `http` / `main` with `schedule.DefaultParams()`
+- [ ] `GET/POST /review` HTML; focus one Word; four grade buttons; post `card_id` + `grade` + `sentence_id`
+- [ ] Furigana toggle (default off); Unfamiliar spans in Sentence
 - [ ] Tailwind CDN styling good enough for phone
 
-**Tests:** schedule pure G1–G9; integration grade updates `due_at`.
+**Tests:** schedule pure G1–G9; review integration (temp DB): next order/caps, grade updates `due_at`, empty queue; HTTP smoke for `/review`.
 
 **Acceptance:**
 
 ```bash
-go test ./internal/schedule/... -count=1
+go test ./internal/schedule/... ./internal/review/... -count=1
 go test ./... -count=1
 # manual: login → scrape → /review → grade again/hard/good/easy → next card
 ```
@@ -517,6 +555,8 @@ go test ./... -count=1
 
 | Date | Note |
 |------|------|
+| 2026-07-17 | Pre–Phase 3 architecture: pure `internal/schedule` + deep `internal/review` (next/grade); extract uses `schedule.NewCard`; ADR 0005; plan/HTTP/`sentence_id` locked. Implementation still Phase 3 checklist. |
+| 2026-07-17 | Phase 2 complete: `internal/scrape` RSS 2.0 parse + dual NHK fetch, `POST /api/scrape` (partial success JSON), fixtures under `testdata/rss/`, mock HTTP client (no network in tests), `IngestArticle` per item with `items_new` dedupe. Easy URL optional (`JKRT_NHK_EASY_RSS_URL`); soft-fail when empty. |
 | 2026-07-17 | Phase 1 complete: `migrations/001_init.sql`, `internal/db` (migrate + extract + unfamiliar), Kagome IPA analyze, words/sentence_words/cards on extract, fixture tests green. |
 | 2026-07-17 | Phase 0 complete: go module, Fiber, `/health`, static placeholder (Tailwind CDN + Noto Sans JP), bcrypt + HMAC session auth, acceptance curls green. |
 | 2026-07-17 | Agent-hardening: sm2-spec, HTTP table, locked pick-ones, acceptance curls, CDN rule, feed URL notes. |

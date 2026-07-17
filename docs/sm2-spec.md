@@ -2,7 +2,8 @@
 
 **This file is the source of truth for Card scheduling.**  
 Implement as pure functions in `internal/schedule`. UI and DB only persist results.  
-ADR: [`0004-sm2-anki-like-scheduler.md`](adr/0004-sm2-anki-like-scheduler.md).
+ADR: [`0004-sm2-anki-like-scheduler.md`](adr/0004-sm2-anki-like-scheduler.md).  
+Package seams: [`0005-pure-schedule-deep-review.md`](adr/0005-pure-schedule-deep-review.md) — schedule pure (`NewCard`, `Apply`, `IsUnfamiliar`, `Params`); Review queue/persist in `internal/review` (next/grade).
 
 ## Grades
 
@@ -45,7 +46,7 @@ Time: use a single `now time.Time` parameter in pure functions (inject clock in 
 
 ### New card creation (on extract)
 
-When a Word is first extracted for the Learner:
+When a Word is first extracted for the Learner, **`schedule.NewCard`** produces this state; **`db` only persists** it (no parallel ease/phase constants in extract):
 
 | Field | Value |
 |-------|--------|
@@ -60,6 +61,8 @@ When a Word is first extracted for the Learner:
 **New for daily cap:** `phase == new` OR (`reps == 0` and never left `new` via a grade). Simpler rule: **`phase == new`**. After first non-Again graduation into learning/review, not new.
 
 ## Queue selection (not SM-2 math, but normative)
+
+Implemented by **`internal/review` next** (SQL), using **`NewPerDay` / `SessionLimit` from `schedule.Params`**. Not pure schedule transitions.
 
 1. Load due cards: `due_at <= now` and `phase != new`, order by `due_at` ASC.
 2. If under `SessionLimit`, fill with **new** cards (`phase == new`) up to remaining session slots and not exceeding **new introduced today** vs `NewPerDay`.
@@ -117,7 +120,7 @@ Same step table as learning. On **Good** graduate from last step (or Easy):
 
 ## Unfamiliar Word (display highlight)
 
-A Word is **Unfamiliar** for highlighting iff its Card satisfies:
+A Word is **Unfamiliar** for highlighting iff its Card satisfies (`schedule.IsUnfamiliar`):
 
 ```text
 phase IN (new, learning, relearning)
@@ -125,7 +128,7 @@ OR due_at <= now
 OR (phase == review AND interval_days < 21)
 ```
 
-`21` days = “comfortable” threshold for bolding in article/sentence browse. Review queue still uses due/new rules above, not this predicate alone.
+`21` days = “comfortable” threshold for bolding in article/sentence browse. Review queue still uses due/new rules above, not this predicate alone. **next** applies this when building span flags for the Sentence payload.
 
 ## Empty reading
 

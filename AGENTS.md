@@ -93,7 +93,9 @@ golangci-lint run   # when configured
 
 ## Current status
 
-**Phase 1 (Data layer, analyzer, Cards) — complete.** Full SQLite schema, Kagome IPA Word candidates, extract → words/cards, unfamiliar helper. **Next: Phase 2** (dual NHK RSS scrape).
+**Phase 2 (RSS Scrape, both sources) — complete.** Dual NHK RSS fetch/parse (`internal/scrape`), `POST /api/scrape` with per-source JSON, fixture-backed tests (no network), `IngestArticle` per item.
+
+**Phase 3 architecture locked (ADR 0005):** pure `internal/schedule` (`NewCard` / `Apply` / `IsUnfamiliar` / `Params`) + deep `internal/review` (**next** / **grade**); extract uses `schedule.NewCard`; HTTP stays thin. **Implementation not started** — next work is schedule G1–G9 then review then `/review` UI (see `DEVELOPMENT_PLAN.md` Phase 3).
 
 ## Safety
 

@@ -10,6 +10,20 @@ import (
 	"github.com/rikiisworking/jkrt/internal/auth"
 )
 
+// handleScrape runs dual NHK RSS Scrape and returns per-source JSON
+// (DEVELOPMENT_PLAN HTTP surface: POST /api/scrape).
+func (a *App) handleScrape(c *fiber.Ctx) error {
+	if a.DB == nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "database not configured"})
+	}
+	if a.Analyzer == nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "analyzer not configured"})
+	}
+	// Always 200 with partial-success per source (plan: 200 JSON with per-source errors).
+	result := a.newScraper().Run(c.Context(), time.Now().UTC())
+	return c.JSON(result)
+}
+
 func (a *App) handleHealth(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"status": "ok"})
 }

@@ -88,6 +88,8 @@ func TestLoadDefaultsAuthOn(t *testing.T) {
 	t.Setenv("JKRT_PASSWORD", "")
 	t.Setenv("JKRT_SESSION_TTL", "")
 	t.Setenv("JKRT_SESSION_SECRET", "0123456789abcdef0123456789abcdef")
+	t.Setenv("JKRT_NHK_MAIN_RSS_URL", "")
+	t.Setenv("JKRT_NHK_EASY_RSS_URL", "")
 
 	cfg, err := Load()
 	if err != nil {
@@ -101,6 +103,30 @@ func TestLoadDefaultsAuthOn(t *testing.T) {
 	}
 	if cfg.DBPath != "./jkrt.db" {
 		t.Fatalf("default db: %q", cfg.DBPath)
+	}
+	if cfg.NHKMainRSSURL != DefaultNHKMainRSSURL {
+		t.Fatalf("default main RSS: %q", cfg.NHKMainRSSURL)
+	}
+	if cfg.NHKEasyRSSURL != "" {
+		t.Fatalf("default easy RSS should be empty, got %q", cfg.NHKEasyRSSURL)
+	}
+}
+
+func TestLoadRSSURLOverrides(t *testing.T) {
+	t.Setenv("JKRT_AUTH", "off")
+	t.Setenv("JKRT_SESSION_TTL", "")
+	t.Setenv("JKRT_NHK_MAIN_RSS_URL", "https://example.test/main.xml")
+	t.Setenv("JKRT_NHK_EASY_RSS_URL", "https://example.test/easy.xml")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.NHKMainRSSURL != "https://example.test/main.xml" {
+		t.Fatalf("main: %q", cfg.NHKMainRSSURL)
+	}
+	if cfg.NHKEasyRSSURL != "https://example.test/easy.xml" {
+		t.Fatalf("easy: %q", cfg.NHKEasyRSSURL)
 	}
 }
 

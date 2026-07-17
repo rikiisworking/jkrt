@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/rikiisworking/jkrt/internal/analyze"
 	"github.com/rikiisworking/jkrt/internal/auth"
 	"github.com/rikiisworking/jkrt/internal/config"
 	"github.com/rikiisworking/jkrt/internal/db"
@@ -42,6 +43,11 @@ func run() error {
 	}
 	defer func() { _ = database.Close() }()
 
+	ana, err := analyze.New()
+	if err != nil {
+		return fmt.Errorf("analyzer: %w", err)
+	}
+
 	store := auth.NewStore(database.SQL())
 	var sessions *auth.Manager
 
@@ -51,7 +57,7 @@ func run() error {
 		}
 		sessions = auth.NewManager(cfg.SessionSecret, cfg.SessionTTL)
 	} else {
-		// Auth off: still need users.id=1 for Card FKs (extract / future scrape).
+		// Auth off: still need users.id=1 for Card FKs (extract / scrape).
 		if err := auth.EnsureLearnerRow(store); err != nil {
 			return fmt.Errorf("ensure learner: %w", err)
 		}
@@ -69,6 +75,8 @@ func run() error {
 		Store:     store,
 		Sessions:  sessions,
 		StaticDir: staticDir,
+		DB:        database,
+		Analyzer:  ana,
 	})
 
 	log.Printf("jkrt listening on %s (auth=%v)", cfg.Addr, cfg.AuthEnabled)

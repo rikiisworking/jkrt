@@ -7,6 +7,9 @@ import (
 	"time"
 )
 
+// DefaultNHKMainRSSURL is the verified NHK main cat0 feed (DEVELOPMENT_PLAN.md).
+const DefaultNHKMainRSSURL = "https://news.web.nhk/n-data/conf/na/rss/cat0.xml"
+
 // Config holds process configuration from environment variables.
 type Config struct {
 	Addr          string
@@ -15,16 +18,20 @@ type Config struct {
 	Password      string // bootstrap only; empty after startup is fine if user exists
 	SessionSecret []byte
 	SessionTTL    time.Duration
+	NHKMainRSSURL string // JKRT_NHK_MAIN_RSS_URL
+	NHKEasyRSSURL string // JKRT_NHK_EASY_RSS_URL; empty until a live Easy RSS is known
 }
 
 // Load reads configuration from environment variables.
 func Load() (Config, error) {
 	cfg := Config{
-		Addr:        envOr("JKRT_ADDR", ":8080"),
-		DBPath:      envOr("JKRT_DB_PATH", "./jkrt.db"),
-		Password:    os.Getenv("JKRT_PASSWORD"),
-		SessionTTL:  168 * time.Hour,
-		AuthEnabled: true,
+		Addr:          envOr("JKRT_ADDR", ":8080"),
+		DBPath:        envOr("JKRT_DB_PATH", "./jkrt.db"),
+		Password:      os.Getenv("JKRT_PASSWORD"),
+		SessionTTL:    168 * time.Hour,
+		AuthEnabled:   true,
+		NHKMainRSSURL: envOr("JKRT_NHK_MAIN_RSS_URL", DefaultNHKMainRSSURL),
+		NHKEasyRSSURL: strings.TrimSpace(os.Getenv("JKRT_NHK_EASY_RSS_URL")),
 	}
 
 	authRaw := strings.ToLower(strings.TrimSpace(envOr("JKRT_AUTH", "on")))

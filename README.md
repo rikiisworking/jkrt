@@ -2,14 +2,15 @@
 
 Personal web app for **N2 → N1 reading**: pull **NHK main + NHK Easy RSS**, extract **words** (lemma + reading), and review them with **Anki-like SM-2** scheduling in real sentence context.
 
-> **Status:** Phase 1 complete — schema, Kagome analyze, words/cards extract.  
+> **Status:** Phase 2 complete — dual NHK RSS scrape + ingest.  
+> Phase 3 architecture locked ([ADR 0005](docs/adr/0005-pure-schedule-deep-review.md)): pure `schedule` + deep `review` — implementation next.  
 > See [`DEVELOPMENT_PLAN.md`](DEVELOPMENT_PLAN.md) and [`CONTEXT.md`](CONTEXT.md).
 
 ## Features (shipped / planned)
 
 - [x] Local Go server with password auth (HMAC session cookie)
 - [x] Morphological analysis → kanji-bearing **Words** + Card rows
-- [ ] User-triggered scrape of **both** NHK feeds (RSS only — no HTML page scrape)
+- [x] User-triggered scrape of **both** NHK feeds (RSS only — no HTML page scrape)
 - [ ] Review one Word at a time (Again / Hard / Good / Easy)
 - [ ] Sentence context with unfamiliar words highlighted; furigana on toggle
 - [ ] iPhone via Cloudflare Tunnel (auth required)
@@ -64,7 +65,7 @@ Copy [`.env.example`](.env.example) for the full env list. Do not commit `.env` 
 go test ./... -count=1
 ```
 
-## Config (Phase 0)
+## Config
 
 | Env | Default | Notes |
 |-----|---------|--------|
@@ -74,3 +75,15 @@ go test ./... -count=1
 | `JKRT_PASSWORD` | — | Bootstrap user 1 if no row yet |
 | `JKRT_SESSION_SECRET` | — | Required when auth on (≥32 bytes) |
 | `JKRT_SESSION_TTL` | `168h` | Cookie lifetime |
+| `JKRT_NHK_MAIN_RSS_URL` | NHK main cat0 | Override main feed |
+| `JKRT_NHK_EASY_RSS_URL` | *(empty)* | Set when a live Easy RSS is known |
+
+### Scrape (auth off, local)
+
+```bash
+export JKRT_AUTH=off
+go run ./cmd/server
+curl -sS -X POST http://127.0.0.1:8080/api/scrape
+# → {"sources":[{"name":"nhk_main","ok":true,"items_new":N},{"name":"nhk_easy","ok":false,"items_new":0,"error":"feed URL not configured"}]}
+# Easy soft-fails until JKRT_NHK_EASY_RSS_URL is set. Main needs network.
+```

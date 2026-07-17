@@ -22,7 +22,7 @@ func TestOpenAndMigrate(t *testing.T) {
 	}
 }
 
-func TestExtractFixtureCreatesWordsAndCards(t *testing.T) {
+func TestIngestTextFixtureCreatesWordsAndCards(t *testing.T) {
 	d := openTestDB(t)
 	seedUser(t, d)
 
@@ -34,12 +34,15 @@ func TestExtractFixtureCreatesWordsAndCards(t *testing.T) {
 	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
 	sentence := "経済政策を発表した。"
 
-	articleID, err := d.ProcessText(db.LearnerUserID, sentence, a, now)
+	res, err := d.IngestText(db.LearnerUserID, sentence, a, now)
 	if err != nil {
-		t.Fatalf("ProcessText: %v", err)
+		t.Fatalf("IngestText: %v", err)
 	}
-	if articleID == 0 {
+	if res.ArticleID == 0 {
 		t.Fatal("expected article id")
+	}
+	if res.Status != db.IngestCreated {
+		t.Fatalf("status: got %v want Created", res.Status)
 	}
 
 	var wordCount int
@@ -102,11 +105,11 @@ func TestUniqueLemmaReading(t *testing.T) {
 	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
 	sentence := "経済政策を発表した。"
 
-	if _, err := d.ProcessText(db.LearnerUserID, sentence, a, now); err != nil {
-		t.Fatalf("first ProcessText: %v", err)
+	if _, err := d.IngestText(db.LearnerUserID, sentence, a, now); err != nil {
+		t.Fatalf("first IngestText: %v", err)
 	}
-	if _, err := d.ProcessText(db.LearnerUserID, sentence, a, now.Add(time.Second)); err != nil {
-		t.Fatalf("second ProcessText: %v", err)
+	if _, err := d.IngestText(db.LearnerUserID, sentence, a, now.Add(time.Second)); err != nil {
+		t.Fatalf("second IngestText: %v", err)
 	}
 
 	var wordCount int
@@ -128,10 +131,10 @@ func TestUniqueLemmaReading(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cardCount != wordCount {
-		t.Fatalf("cards should stay 1:1 with words after re-extract: cards=%d words=%d", cardCount, wordCount)
+		t.Fatalf("cards should stay 1:1 with words after re-ingest: cards=%d words=%d", cardCount, wordCount)
 	}
 
-	// But two sentence_words occurrences per word (two sentences).
+	// But two sentence_words occurrences per word (two sentences under two articles).
 	var swCount int
 	if err := d.SQL().QueryRow(`SELECT COUNT(1) FROM sentence_words`).Scan(&swCount); err != nil {
 		t.Fatal(err)
@@ -146,18 +149,7 @@ func TestEmptyReadingSkippedOnPersist(t *testing.T) {
 	seedUser(t, d)
 
 	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
-	sourceID, err := d.EnsureSource("t", "http://example.test", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	articleID, err := d.InsertArticle(sourceID, "e1", "t", "", "x", now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sid, err := d.InsertSentence(articleID, "漢字と空読み", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	sid := seedSentence(t, d, now, "漢字と空読み")
 
 	// Manually craft candidates: one valid, one empty reading (must be skipped).
 	cands := []analyze.Candidate{

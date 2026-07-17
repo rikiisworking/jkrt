@@ -132,8 +132,8 @@ func TestCardNotOverwrittenOnReExtract(t *testing.T) {
 	}
 	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
 
-	if _, err := d.ProcessText(db.LearnerUserID, "経済を発表した。", a, now); err != nil {
-		t.Fatalf("ProcessText: %v", err)
+	if _, err := d.IngestText(db.LearnerUserID, "経済を発表した。", a, now); err != nil {
+		t.Fatalf("IngestText: %v", err)
 	}
 
 	// Simulate learner progress: graduate a card out of new.
@@ -158,8 +158,8 @@ func TestCardNotOverwrittenOnReExtract(t *testing.T) {
 	}
 
 	// Re-extract same content — must not reset progressed cards to new.
-	if _, err := d.ProcessText(db.LearnerUserID, "経済を発表した。", a, now.Add(time.Minute)); err != nil {
-		t.Fatalf("re ProcessText: %v", err)
+	if _, err := d.IngestText(db.LearnerUserID, "経済を発表した。", a, now.Add(time.Minute)); err != nil {
+		t.Fatalf("re IngestText: %v", err)
 	}
 
 	var reviewAfter int
@@ -181,7 +181,7 @@ func TestCardNotOverwrittenOnReExtract(t *testing.T) {
 	}
 }
 
-func TestProcessTextMultiSentence(t *testing.T) {
+func TestIngestTextMultiSentence(t *testing.T) {
 	d := openTestDB(t)
 	seedUser(t, d)
 	a, err := analyze.New()
@@ -191,10 +191,14 @@ func TestProcessTextMultiSentence(t *testing.T) {
 	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
 	text := "経済政策を発表した。市場は反応した。"
 
-	articleID, err := d.ProcessText(db.LearnerUserID, text, a, now)
+	ing, err := d.IngestText(db.LearnerUserID, text, a, now)
 	if err != nil {
-		t.Fatalf("ProcessText: %v", err)
+		t.Fatalf("IngestText: %v", err)
 	}
+	if ing.Status != db.IngestCreated {
+		t.Fatalf("status: got %v want Created", ing.Status)
+	}
+	articleID := ing.ArticleID
 
 	var sentCount int
 	if err := d.SQL().QueryRow(
@@ -253,7 +257,7 @@ func TestProcessTextMultiSentence(t *testing.T) {
 	}
 }
 
-func TestProcessTextEmptyString(t *testing.T) {
+func TestIngestTextEmptyString(t *testing.T) {
 	d := openTestDB(t)
 	seedUser(t, d)
 	a, err := analyze.New()
@@ -262,10 +266,11 @@ func TestProcessTextEmptyString(t *testing.T) {
 	}
 	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
 
-	articleID, err := d.ProcessText(db.LearnerUserID, "   ", a, now)
+	ing, err := d.IngestText(db.LearnerUserID, "   ", a, now)
 	if err != nil {
-		t.Fatalf("ProcessText blank: %v", err)
+		t.Fatalf("IngestText blank: %v", err)
 	}
+	articleID := ing.ArticleID
 	var sentCount int
 	if err := d.SQL().QueryRow(
 		`SELECT COUNT(1) FROM sentences WHERE article_id = ?`, articleID,
@@ -302,27 +307,19 @@ func TestPersistCandidatesValidation(t *testing.T) {
 	}
 }
 
-func TestExtractSentenceNilAnalyzer(t *testing.T) {
+func TestIngestNilAnalyzer(t *testing.T) {
 	d := openTestDB(t)
 	seedUser(t, d)
 	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
-	sourceID, err := d.EnsureSource("t", "u", "")
-	if err != nil {
-		t.Fatal(err)
+	if _, err := d.IngestText(db.LearnerUserID, "経済", nil, now); err == nil {
+		t.Fatal("expected nil analyzer error from IngestText")
 	}
-	aid, err := d.InsertArticle(sourceID, "e", "t", "", "x", now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sid, err := d.InsertSentence(aid, "経済", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := d.ExtractSentence(db.LearnerUserID, sid, "経済", nil, now); err == nil {
-		t.Fatal("expected nil analyzer error")
-	}
-	if _, err := d.ProcessText(db.LearnerUserID, "経済", nil, now); err == nil {
-		t.Fatal("expected nil analyzer error from ProcessText")
+	if _, err := d.IngestArticle(db.LearnerUserID, db.SourceRef{Name: "t"}, db.ArticleInput{
+		ExternalID: "e1",
+		RawText:    "経済",
+		FetchedAt:  now,
+	}, nil, now); err == nil {
+		t.Fatal("expected nil analyzer error from IngestArticle")
 	}
 }
 
@@ -357,7 +354,7 @@ func TestEmptyLemmaUsesSurfaceOnPersist(t *testing.T) {
 	}
 }
 
-func TestProcessTextSameNowNoCollision(t *testing.T) {
+func TestIngestTextSameNowNoCollision(t *testing.T) {
 	d := openTestDB(t)
 	seedUser(t, d)
 	a, err := analyze.New()
@@ -366,15 +363,15 @@ func TestProcessTextSameNowNoCollision(t *testing.T) {
 	}
 	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
 	// Same clock + same text length must still produce distinct articles.
-	id1, err := d.ProcessText(db.LearnerUserID, "経済。", a, now)
+	r1, err := d.IngestText(db.LearnerUserID, "経済。", a, now)
 	if err != nil {
 		t.Fatalf("first: %v", err)
 	}
-	id2, err := d.ProcessText(db.LearnerUserID, "政策。", a, now)
+	r2, err := d.IngestText(db.LearnerUserID, "政策。", a, now)
 	if err != nil {
 		t.Fatalf("second: %v", err)
 	}
-	if id1 == id2 {
+	if r1.ArticleID == r2.ArticleID {
 		t.Fatal("expected distinct article ids")
 	}
 	var n int
@@ -386,7 +383,7 @@ func TestProcessTextSameNowNoCollision(t *testing.T) {
 	}
 }
 
-func TestReExtractSameSentenceReplacesOccurrences(t *testing.T) {
+func TestRePersistSameSentenceReplacesOccurrences(t *testing.T) {
 	d := openTestDB(t)
 	seedUser(t, d)
 	a, err := analyze.New()
@@ -394,9 +391,14 @@ func TestReExtractSameSentenceReplacesOccurrences(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
-	sid := seedSentence(t, d, now, "経済政策を発表した。")
+	text := "経済政策を発表した。"
+	sid := seedSentence(t, d, now, text)
 
-	if err := d.ExtractSentence(db.LearnerUserID, sid, "経済政策を発表した。", a, now); err != nil {
+	cands, err := a.Candidates(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.PersistCandidates(db.LearnerUserID, sid, cands, now); err != nil {
 		t.Fatal(err)
 	}
 	var first int
@@ -407,7 +409,7 @@ func TestReExtractSameSentenceReplacesOccurrences(t *testing.T) {
 		t.Fatalf("sentence_words first=%d want 3", first)
 	}
 
-	if err := d.ExtractSentence(db.LearnerUserID, sid, "経済政策を発表した。", a, now.Add(time.Minute)); err != nil {
+	if err := d.PersistCandidates(db.LearnerUserID, sid, cands, now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	var second int
@@ -415,7 +417,7 @@ func TestReExtractSameSentenceReplacesOccurrences(t *testing.T) {
 		t.Fatal(err)
 	}
 	if second != first {
-		t.Fatalf("re-extract should replace not duplicate: first=%d second=%d", first, second)
+		t.Fatalf("re-persist should replace not duplicate: first=%d second=%d", first, second)
 	}
 }
 
@@ -462,7 +464,7 @@ func TestSentenceWordSpansStored(t *testing.T) {
 	}
 	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
 	sentence := "経済政策を発表した。"
-	if _, err := d.ProcessText(db.LearnerUserID, sentence, a, now); err != nil {
+	if _, err := d.IngestText(db.LearnerUserID, sentence, a, now); err != nil {
 		t.Fatal(err)
 	}
 
@@ -522,18 +524,117 @@ func TestEnsureSourceIdempotent(t *testing.T) {
 	}
 }
 
-func TestArticleUniqueExternalID(t *testing.T) {
+func TestIngestArticleDedupe(t *testing.T) {
 	d := openTestDB(t)
-	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
-	sid, err := d.EnsureSource("s", "u", "")
+	seedUser(t, d)
+	a, err := analyze.New()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.InsertArticle(sid, "guid-1", "t", "http://x", "body", now); err != nil {
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	src := db.SourceRef{Name: "nhk_main", FeedURL: "http://example.test/main"}
+	art := db.ArticleInput{
+		ExternalID: "guid-1",
+		Title:      "経済政策を発表した。",
+		URL:        "http://x",
+		RawText:    "経済政策を発表した。",
+		FetchedAt:  now,
+	}
+
+	first, err := d.IngestArticle(db.LearnerUserID, src, art, a, now)
+	if err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	if first.Status != db.IngestCreated {
+		t.Fatalf("first status: got %v want Created", first.Status)
+	}
+
+	var wordsAfterCreate int
+	if err := d.SQL().QueryRow(`SELECT COUNT(1) FROM words`).Scan(&wordsAfterCreate); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.InsertArticle(sid, "guid-1", "t2", "http://y", "body2", now); err == nil {
-		t.Fatal("expected UNIQUE(source_id, external_id) violation")
+	if wordsAfterCreate != 3 {
+		t.Fatalf("words after create: %d want 3", wordsAfterCreate)
+	}
+	var sentAfterCreate int
+	if err := d.SQL().QueryRow(`SELECT COUNT(1) FROM sentences`).Scan(&sentAfterCreate); err != nil {
+		t.Fatal(err)
+	}
+
+	// Same external_id: Exists, no re-extract (word/sentence counts stable).
+	second, err := d.IngestArticle(db.LearnerUserID, src, db.ArticleInput{
+		ExternalID: "guid-1",
+		Title:      "changed title ignored",
+		URL:        "http://y",
+		RawText:    "市場は反応した。", // would add more words if re-extracted
+		FetchedAt:  now.Add(time.Minute),
+	}, a, now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	if second.Status != db.IngestExists {
+		t.Fatalf("second status: got %v want Exists", second.Status)
+	}
+	if second.ArticleID != first.ArticleID {
+		t.Fatalf("article id: first=%d second=%d", first.ArticleID, second.ArticleID)
+	}
+
+	var wordsAfterDedupe int
+	if err := d.SQL().QueryRow(`SELECT COUNT(1) FROM words`).Scan(&wordsAfterDedupe); err != nil {
+		t.Fatal(err)
+	}
+	if wordsAfterDedupe != wordsAfterCreate {
+		t.Fatalf("dedupe re-extracted words: %d → %d", wordsAfterCreate, wordsAfterDedupe)
+	}
+	var sentAfterDedupe int
+	if err := d.SQL().QueryRow(`SELECT COUNT(1) FROM sentences`).Scan(&sentAfterDedupe); err != nil {
+		t.Fatal(err)
+	}
+	if sentAfterDedupe != sentAfterCreate {
+		t.Fatalf("dedupe re-created sentences: %d → %d", sentAfterCreate, sentAfterDedupe)
+	}
+
+	// Different external_id on same Source → Created again.
+	third, err := d.IngestArticle(db.LearnerUserID, src, db.ArticleInput{
+		ExternalID: "guid-2",
+		Title:      "政策。",
+		RawText:    "政策。",
+		FetchedAt:  now,
+	}, a, now)
+	if err != nil {
+		t.Fatalf("third: %v", err)
+	}
+	if third.Status != db.IngestCreated {
+		t.Fatalf("third status: got %v want Created", third.Status)
+	}
+	if third.ArticleID == first.ArticleID {
+		t.Fatal("expected new article for guid-2")
+	}
+	var articles int
+	if err := d.SQL().QueryRow(`SELECT COUNT(1) FROM articles`).Scan(&articles); err != nil {
+		t.Fatal(err)
+	}
+	if articles != 2 {
+		t.Fatalf("articles=%d want 2", articles)
+	}
+}
+
+func TestIngestArticleValidation(t *testing.T) {
+	d := openTestDB(t)
+	seedUser(t, d)
+	a, err := analyze.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	if _, err := d.IngestArticle(0, db.SourceRef{Name: "s"}, db.ArticleInput{ExternalID: "e", RawText: "x"}, a, now); err == nil {
+		t.Fatal("expected userID error")
+	}
+	if _, err := d.IngestArticle(db.LearnerUserID, db.SourceRef{}, db.ArticleInput{ExternalID: "e", RawText: "x"}, a, now); err == nil {
+		t.Fatal("expected source name error")
+	}
+	if _, err := d.IngestArticle(db.LearnerUserID, db.SourceRef{Name: "s"}, db.ArticleInput{RawText: "x"}, a, now); err == nil {
+		t.Fatal("expected external_id error")
 	}
 }
 
@@ -581,7 +682,7 @@ func TestUniqueLemmaReadingExactWordCountStable(t *testing.T) {
 	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
 	sentence := "経済政策を発表した。"
 
-	if _, err := d.ProcessText(db.LearnerUserID, sentence, a, now); err != nil {
+	if _, err := d.IngestText(db.LearnerUserID, sentence, a, now); err != nil {
 		t.Fatal(err)
 	}
 	var first int
@@ -593,7 +694,7 @@ func TestUniqueLemmaReadingExactWordCountStable(t *testing.T) {
 	}
 
 	for i := 0; i < 3; i++ {
-		if _, err := d.ProcessText(db.LearnerUserID, sentence, a, now.Add(time.Duration(i+1)*time.Second)); err != nil {
+		if _, err := d.IngestText(db.LearnerUserID, sentence, a, now.Add(time.Duration(i+1)*time.Second)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -621,7 +722,7 @@ func TestExtractFixtureExactWords(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
-	if _, err := d.ProcessText(db.LearnerUserID, "経済政策を発表した。", a, now); err != nil {
+	if _, err := d.IngestText(db.LearnerUserID, "経済政策を発表した。", a, now); err != nil {
 		t.Fatal(err)
 	}
 
@@ -710,11 +811,27 @@ func seedSentence(t *testing.T, d *db.DB, now time.Time, text string) int64 {
 	if err != nil {
 		t.Fatal(err)
 	}
-	articleID, err := d.InsertArticle(sourceID, "seed-"+text, "t", "", text, now)
+	nowStr := now.UTC().Format(time.RFC3339)
+	res, err := d.SQL().Exec(
+		`INSERT INTO articles (source_id, external_id, title, url, fetched_at, raw_text)
+		 VALUES (?, ?, 't', '', ?, ?)`,
+		sourceID, "seed-"+text, nowStr, text,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sid, err := d.InsertSentence(articleID, text, 0)
+	articleID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err = d.SQL().Exec(
+		`INSERT INTO sentences (article_id, text, order_index) VALUES (?, ?, 0)`,
+		articleID, text,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sid, err := res.LastInsertId()
 	if err != nil {
 		t.Fatal(err)
 	}

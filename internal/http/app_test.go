@@ -5,56 +5,78 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/rikiisworking/jkrt/internal/analyze"
 	"github.com/rikiisworking/jkrt/internal/auth"
 	"github.com/rikiisworking/jkrt/internal/config"
+	"github.com/rikiisworking/jkrt/internal/db"
 	jkrthttp "github.com/rikiisworking/jkrt/internal/http"
+	"github.com/rikiisworking/jkrt/internal/scrape"
 )
 
 func newTestApp(t *testing.T, authOn bool) *jkrthttp.App {
 	t.Helper()
-	return newTestAppOpts(t, authOn, filepath.Join("..", "..", "web", "static"))
+	return newTestAppOpts(t, authOn, filepath.Join("..", "..", "web", "static"), nil)
 }
 
-func newTestAppOpts(t *testing.T, authOn bool, staticDir string) *jkrthttp.App {
+func newTestAppOpts(t *testing.T, authOn bool, staticDir string, httpClient scrape.HTTPDoer) *jkrthttp.App {
 	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "test.db")
 	cfg := config.Config{
 		Addr:          ":0",
-		DBPath:        filepath.Join(t.TempDir(), "test.db"),
+		DBPath:        dbPath,
 		AuthEnabled:   authOn,
 		Password:      "test-password-change-me",
 		SessionSecret: []byte("0123456789abcdef0123456789abcdef"),
 		SessionTTL:    time.Hour,
+		NHKMainRSSURL: "https://fixture.test/nhk_main.xml",
+		NHKEasyRSSURL: "https://fixture.test/nhk_easy.xml",
+	}
+
+	database, err := db.Open(dbPath, filepath.Join("..", "..", "migrations"))
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+
+	ana, err := analyze.New()
+	if err != nil {
+		t.Fatalf("analyzer: %v", err)
 	}
 
 	var store *auth.Store
 	var sessions *auth.Manager
 	if authOn {
-		var err error
-		store, err = auth.OpenStore(cfg.DBPath)
-		if err != nil {
-			t.Fatalf("OpenStore: %v", err)
-		}
-		t.Cleanup(func() { _ = store.Close() })
+		store = auth.NewStore(database.SQL())
 		if err := auth.Bootstrap(store, true, cfg.Password); err != nil {
 			t.Fatalf("Bootstrap: %v", err)
 		}
 		sessions = auth.NewManager(cfg.SessionSecret, cfg.SessionTTL)
+	} else {
+		storeWrap := auth.NewStore(database.SQL())
+		if err := auth.EnsureLearnerRow(storeWrap); err != nil {
+			t.Fatalf("EnsureLearnerRow: %v", err)
+		}
 	}
 
 	return jkrthttp.New(jkrthttp.Options{
-		Config:    cfg,
-		Store:     store,
-		Sessions:  sessions,
-		StaticDir: staticDir,
+		Config:     cfg,
+		Store:      store,
+		Sessions:   sessions,
+		StaticDir:  staticDir,
+		DB:         database,
+		Analyzer:   ana,
+		HTTPClient: httpClient,
 	})
 }
 
@@ -125,7 +147,7 @@ func TestAuthOffIndexOpen(t *testing.T) {
 }
 
 func TestIndexInlineFallbackWithoutStatic(t *testing.T) {
-	app := newTestAppOpts(t, false, "")
+	app := newTestAppOpts(t, false, "", nil)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	resp, err := app.Fiber.Test(req)
 	if err != nil {
@@ -443,5 +465,294 @@ func TestLogoutRequiresAuth(t *testing.T) {
 	}
 	if resp.Header.Get("Location") != "/login" {
 		t.Fatalf("Location: %q", resp.Header.Get("Location"))
+	}
+}
+
+// fixtureHTTPClient maps fixture URLs to testdata RSS — zero network dials.
+type fixtureHTTPClient map[string][]byte
+
+func (ft fixtureHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	body, ok := ft[req.URL.String()]
+	if !ok {
+		return &http.Response{
+			StatusCode: http.StatusNotFound,
+			Body:       io.NopCloser(strings.NewReader("missing")),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(string(body))),
+		Header:     make(http.Header),
+		Request:    req,
+	}, nil
+}
+
+func loadRSSFixtures(t *testing.T) fixtureHTTPClient {
+	t.Helper()
+	main, err := os.ReadFile(filepath.Join("..", "..", "testdata", "rss", "nhk_main_sample.xml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	easy, err := os.ReadFile(filepath.Join("..", "..", "testdata", "rss", "nhk_easy_sample.xml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fixtureHTTPClient{
+		"https://fixture.test/nhk_main.xml": main,
+		"https://fixture.test/nhk_easy.xml": easy,
+	}
+}
+
+func TestScrapeRequiresAuth(t *testing.T) {
+	app := newTestAppOpts(t, true, "", loadRSSFixtures(t))
+	req := httptest.NewRequest(http.MethodPost, "/api/scrape", nil)
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatalf("Test: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status: got %d want 401", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "unauthorized") {
+		t.Fatalf("body: %s", body)
+	}
+}
+
+func TestScrapeAuthOffIngestsFixtures(t *testing.T) {
+	app := newTestAppOpts(t, false, "", loadRSSFixtures(t))
+	// Fiber.Test can time out on Kagome; allow more time.
+	req := httptest.NewRequest(http.MethodPost, "/api/scrape", nil)
+	resp, err := app.Fiber.Test(req, 60_000)
+	if err != nil {
+		t.Fatalf("Test: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: %d body=%s", resp.StatusCode, body)
+	}
+	var result scrape.Result
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(result.Sources) != 2 {
+		t.Fatalf("sources: %+v", result.Sources)
+	}
+	// Plan JSON shape: sources[{name, ok, items_new, error?}]
+	byName := map[string]scrape.SourceResult{}
+	for _, sr := range result.Sources {
+		byName[sr.Name] = sr
+		if !sr.OK {
+			t.Fatalf("source %s not ok: %+v", sr.Name, sr)
+		}
+	}
+	main, ok := byName[scrape.SourceNHKMain]
+	if !ok {
+		t.Fatal("missing nhk_main")
+	}
+	easy, ok := byName[scrape.SourceNHKEasy]
+	if !ok {
+		t.Fatal("missing nhk_easy")
+	}
+	if main.ItemsNew != 2 {
+		t.Fatalf("main items_new: %d", main.ItemsNew)
+	}
+	if easy.ItemsNew != 3 {
+		t.Fatalf("easy items_new: %d", easy.ItemsNew)
+	}
+
+	// Dedupe on second scrape
+	req2 := httptest.NewRequest(http.MethodPost, "/api/scrape", nil)
+	resp2, err := app.Fiber.Test(req2, 60_000)
+	if err != nil {
+		t.Fatalf("second scrape: %v", err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("second status: %d", resp2.StatusCode)
+	}
+	var result2 scrape.Result
+	if err := json.NewDecoder(resp2.Body).Decode(&result2); err != nil {
+		t.Fatalf("decode2: %v", err)
+	}
+	for _, sr := range result2.Sources {
+		if !sr.OK {
+			t.Fatalf("%s not ok on dedupe: %+v", sr.Name, sr)
+		}
+		if sr.ItemsNew != 0 {
+			t.Fatalf("%s items_new on redeupe: %d", sr.Name, sr.ItemsNew)
+		}
+	}
+}
+
+func TestScrapeWithAuthCookie(t *testing.T) {
+	app := newTestAppOpts(t, true, "", loadRSSFixtures(t))
+	session := loginCookie(t, app)
+	req := httptest.NewRequest(http.MethodPost, "/api/scrape", nil)
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: session})
+	resp, err := app.Fiber.Test(req, 60_000)
+	if err != nil {
+		t.Fatalf("Test: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: %d body=%s", resp.StatusCode, body)
+	}
+	var result scrape.Result
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(result.Sources) != 2 {
+		t.Fatalf("sources: %+v", result.Sources)
+	}
+	for _, sr := range result.Sources {
+		if !sr.OK {
+			t.Fatalf("%s: %+v", sr.Name, sr)
+		}
+	}
+}
+
+func TestScrapePartialSuccessJSON(t *testing.T) {
+	// Easy URL empty → 200 with ok=false on easy, main still ok (plan partial success).
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	cfg := config.Config{
+		Addr:          ":0",
+		DBPath:        dbPath,
+		AuthEnabled:   false,
+		NHKMainRSSURL: "https://fixture.test/nhk_main.xml",
+		NHKEasyRSSURL: "", // soft-fail
+	}
+	database, err := db.Open(dbPath, filepath.Join("..", "..", "migrations"))
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := auth.EnsureLearnerRow(auth.NewStore(database.SQL())); err != nil {
+		t.Fatal(err)
+	}
+	ana, err := analyze.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Only main fixture registered.
+	mainBody, err := os.ReadFile(filepath.Join("..", "..", "testdata", "rss", "nhk_main_sample.xml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := fixtureHTTPClient{"https://fixture.test/nhk_main.xml": mainBody}
+	app := jkrthttp.New(jkrthttp.Options{
+		Config:     cfg,
+		DB:         database,
+		Analyzer:   ana,
+		HTTPClient: client,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/scrape", nil)
+	resp, err := app.Fiber.Test(req, 60_000)
+	if err != nil {
+		t.Fatalf("Test: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: %d body=%s", resp.StatusCode, body)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result scrape.Result
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("decode: %v body=%s", err, raw)
+	}
+	if len(result.Sources) != 2 {
+		t.Fatalf("sources: %s", raw)
+	}
+	var main, easy scrape.SourceResult
+	for _, sr := range result.Sources {
+		switch sr.Name {
+		case scrape.SourceNHKMain:
+			main = sr
+		case scrape.SourceNHKEasy:
+			easy = sr
+		}
+	}
+	if !main.OK || main.ItemsNew != 2 {
+		t.Fatalf("main: %+v", main)
+	}
+	if easy.OK {
+		t.Fatalf("easy should soft-fail: %+v", easy)
+	}
+	if easy.Error == "" {
+		t.Fatal("easy needs error field")
+	}
+	// Ensure wire JSON includes "error" for failed source and not for ok source.
+	if !strings.Contains(string(raw), `"error"`) {
+		t.Fatalf("expected error key in JSON: %s", raw)
+	}
+}
+
+func TestScrapeMissingDB(t *testing.T) {
+	ana, err := analyze.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := jkrthttp.New(jkrthttp.Options{
+		Config: config.Config{
+			AuthEnabled:   false,
+			NHKMainRSSURL: "https://fixture.test/nhk_main.xml",
+		},
+		DB:         nil,
+		Analyzer:   ana,
+		HTTPClient: loadRSSFixtures(t),
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/scrape", nil)
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatalf("Test: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status: got %d want 500", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "database") {
+		t.Fatalf("body: %s", body)
+	}
+}
+
+func TestScrapeMissingAnalyzer(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	database, err := db.Open(dbPath, filepath.Join("..", "..", "migrations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	app := jkrthttp.New(jkrthttp.Options{
+		Config: config.Config{
+			AuthEnabled:   false,
+			NHKMainRSSURL: "https://fixture.test/nhk_main.xml",
+		},
+		DB:         database,
+		Analyzer:   nil,
+		HTTPClient: loadRSSFixtures(t),
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/scrape", nil)
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatalf("Test: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status: got %d want 500", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "analyzer") {
+		t.Fatalf("body: %s", body)
 	}
 }

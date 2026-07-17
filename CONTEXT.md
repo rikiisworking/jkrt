@@ -69,7 +69,7 @@ One of **Again**, **Hard**, **Good**, **Easy** on a single Card/Word. Drives Ank
 _Avoid_: later, known (retired simple ladder), pass/fail, letter grade
 
 **Review**:
-One learner judgment on a **single Word** (its Card), shown in the context of a Sentence. Updates that Card’s schedule only — not every Unfamiliar Word in the Sentence. When multiple Sentences contain the Word, v1 shows the **newest** occurrence as context.
+One learner judgment on a **single Word** (its Card), shown in the context of a Sentence. Updates that Card’s schedule only — not every Unfamiliar Word in the Sentence. When multiple Sentences contain the Word, v1 shows the **newest** occurrence as context. The persisted Review records the **Sentence that was shown** (not re-resolved later if a newer occurrence appears).
 _Avoid_: Study session (the whole sitting), quiz, sentence grade (v1 does not grade the whole Sentence)
 
 **Scrape**:

@@ -1,17 +1,21 @@
 package http
 
 import (
+	"net/http"
 	"path/filepath"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 
+	"github.com/rikiisworking/jkrt/internal/analyze"
 	"github.com/rikiisworking/jkrt/internal/auth"
 	"github.com/rikiisworking/jkrt/internal/config"
+	"github.com/rikiisworking/jkrt/internal/db"
+	"github.com/rikiisworking/jkrt/internal/scrape"
 )
 
-// App wraps the Fiber app and auth dependencies.
+// App wraps the Fiber app and dependencies.
 type App struct {
 	Fiber       *fiber.App
 	Config      config.Config
@@ -19,17 +23,25 @@ type App struct {
 	Sessions    *auth.Manager
 	StaticDir   string
 	AuthEnabled bool
+	DB          *db.DB
+	Analyzer    *analyze.Analyzer
+	// HTTPClient is used by Scrape; nil → default client with scrape.DefaultTimeout.
+	// Tests inject a fixture transport so no network is dialed.
+	HTTPClient scrape.HTTPDoer
 }
 
 // Options configures the HTTP app.
 type Options struct {
-	Config    config.Config
-	Store     *auth.Store
-	Sessions  *auth.Manager
-	StaticDir string
+	Config     config.Config
+	Store      *auth.Store
+	Sessions   *auth.Manager
+	StaticDir  string
+	DB         *db.DB
+	Analyzer   *analyze.Analyzer
+	HTTPClient scrape.HTTPDoer
 }
 
-// New builds a Fiber application with Phase 0 routes.
+// New builds a Fiber application with Phase 0–2 routes.
 func New(opts Options) *App {
 	f := fiber.New(fiber.Config{
 		DisableStartupMessage: true,
@@ -55,6 +67,9 @@ func New(opts Options) *App {
 		Sessions:    opts.Sessions,
 		StaticDir:   opts.StaticDir,
 		AuthEnabled: opts.Config.AuthEnabled,
+		DB:          opts.DB,
+		Analyzer:    opts.Analyzer,
+		HTTPClient:  opts.HTTPClient,
 	}
 	a.routes()
 	return a
@@ -76,6 +91,17 @@ func (a *App) routes() {
 	protected := a.Fiber.Group("/", a.requireAuth)
 	protected.Get("/", a.handleIndex)
 	protected.Post("/logout", a.handleLogout)
+	protected.Post("/api/scrape", a.handleScrape)
+}
+
+// newScraper builds a Scraper from app deps (both NHK sources always).
+func (a *App) newScraper() *scrape.Scraper {
+	var client scrape.HTTPDoer = a.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: scrape.DefaultTimeout}
+	}
+	sources := scrape.DefaultSources(a.Config.NHKMainRSSURL, a.Config.NHKEasyRSSURL)
+	return scrape.New(a.DB, a.Analyzer, sources, client)
 }
 
 // Listen starts the HTTP server.
