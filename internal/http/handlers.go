@@ -284,22 +284,11 @@ func (a *App) handleSentenceExtract(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 	}
 
-	// Reload sentence for display (text + extracted state).
-	art, sents, found, err := a.DB.GetArticle(articleID)
+	sent, found, err := a.DB.GetSentence(articleID, sentenceID)
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 	}
 	if !found {
-		return c.Status(fiber.StatusNotFound).SendString("article not found")
-	}
-	var sent db.SentenceListItem
-	for _, s := range sents {
-		if s.ID == sentenceID {
-			sent = s
-			break
-		}
-	}
-	if sent.ID == 0 {
 		return c.Status(fiber.StatusNotFound).SendString("sentence not found")
 	}
 
@@ -307,7 +296,6 @@ func (a *App) handleSentenceExtract(c *fiber.Ctx) error {
 		c.Type("html", "utf-8")
 		return c.SendString(sentenceRowHTML(articleID, sent, res))
 	}
-	_ = art
 	return c.Redirect(fmt.Sprintf("/articles/%d", articleID), fiber.StatusFound)
 }
 

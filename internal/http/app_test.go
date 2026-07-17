@@ -1084,8 +1084,12 @@ func TestReviewEmptyQueue(t *testing.T) {
 		t.Fatalf("status: %d", resp.StatusCode)
 	}
 	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "Queue empty") {
+	s := string(body)
+	if !strings.Contains(s, "Queue empty") {
 		t.Fatalf("expected empty queue HTML, body=%s", body)
+	}
+	if !strings.Contains(s, "Add to review") && !strings.Contains(s, "Articles") {
+		t.Fatalf("empty queue should guide to Articles / extract, body=%s", s)
 	}
 }
 
@@ -1921,8 +1925,33 @@ func TestExtractRequiresAuth(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("status: got %d want 302 or 401", resp.StatusCode)
+	// HTML POST without cookie → 302 /login (same as other protected HTML).
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("status: got %d want 302", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); loc != "/login" && !strings.Contains(loc, "login") {
+		t.Fatalf("Location: %q", loc)
+	}
+}
+
+func TestExtractInvalidIDs(t *testing.T) {
+	app := newTestApp(t, false)
+	for _, path := range []string{
+		"/articles/0/sentences/1/extract",
+		"/articles/1/sentences/0/extract",
+		"/articles/abc/sentences/1/extract",
+		"/articles/1/sentences/xyz/extract",
+	} {
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		resp, err := app.Fiber.Test(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("%s: status got %d want 400 body=%s", path, resp.StatusCode, body)
+		}
 	}
 }
 
@@ -2022,9 +2051,11 @@ func TestExtractWithAuthAndHTMX(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	cookie := loginCookie(t, app)
+
 	// Unextracted detail shows Add to review
 	dreq := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/articles/%d", store.ArticleID), nil)
-	dreq.AddCookie(&http.Cookie{Name: auth.CookieName, Value: loginCookie(t, app)})
+	dreq.AddCookie(&http.Cookie{Name: auth.CookieName, Value: cookie})
 	dresp, err := app.Fiber.Test(dreq)
 	if err != nil {
 		t.Fatal(err)
@@ -2034,8 +2065,10 @@ func TestExtractWithAuthAndHTMX(t *testing.T) {
 	if !strings.Contains(string(dbody), "Add to review") {
 		t.Fatalf("expected Add to review, body=%s", dbody)
 	}
+	if strings.Contains(string(dbody), "In queue") {
+		t.Fatal("must not show In queue before extract")
+	}
 
-	cookie := loginCookie(t, app)
 	ereq := httptest.NewRequest(http.MethodPost,
 		fmt.Sprintf("/articles/%d/sentences/%d/extract", store.ArticleID, sid), nil)
 	ereq.Header.Set("HX-Request", "true")
@@ -2054,8 +2087,22 @@ func TestExtractWithAuthAndHTMX(t *testing.T) {
 	if strings.HasPrefix(strings.TrimSpace(es), "<!DOCTYPE") {
 		t.Fatal("HTMX partial must not be full document")
 	}
-	if !strings.Contains(es, "In queue") && !strings.Contains(es, "Added") {
+	if !strings.Contains(es, "In queue") {
+		t.Fatalf("expected In queue badge for kanji sentence, body=%s", es)
+	}
+	if !strings.Contains(es, "Added") && !strings.Contains(es, "Words linked") && !strings.Contains(es, "Already") {
 		t.Fatalf("expected extract feedback, body=%s", es)
+	}
+	if strings.Contains(es, "Add to review") {
+		t.Fatal("must not show Add to review after extract")
+	}
+
+	var cards1 int
+	if err := app.DB.SQL().QueryRow(`SELECT COUNT(1) FROM cards`).Scan(&cards1); err != nil {
+		t.Fatal(err)
+	}
+	if cards1 < 1 {
+		t.Fatal("cards missing")
 	}
 
 	// Idempotent second extract
@@ -2071,10 +2118,12 @@ func TestExtractWithAuthAndHTMX(t *testing.T) {
 	if eresp2.StatusCode != http.StatusOK {
 		t.Fatalf("second extract: %d", eresp2.StatusCode)
 	}
-	var cards int
-	_ = app.DB.SQL().QueryRow(`SELECT COUNT(1) FROM cards`).Scan(&cards)
-	if cards < 1 {
-		t.Fatal("cards missing")
+	var cards2 int
+	if err := app.DB.SQL().QueryRow(`SELECT COUNT(1) FROM cards`).Scan(&cards2); err != nil {
+		t.Fatal(err)
+	}
+	if cards2 != cards1 {
+		t.Fatalf("cards grew on re-extract: %d → %d", cards1, cards2)
 	}
 }
 

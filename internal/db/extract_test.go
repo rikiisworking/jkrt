@@ -28,10 +28,10 @@ func TestStoreArticleCreatesSentencesNoCards(t *testing.T) {
 		t.Fatalf("status: %v", res.Status)
 	}
 	var sents, words, cards, sw int
-	_ = d.SQL().QueryRow(`SELECT COUNT(1) FROM sentences`).Scan(&sents)
-	_ = d.SQL().QueryRow(`SELECT COUNT(1) FROM words`).Scan(&words)
-	_ = d.SQL().QueryRow(`SELECT COUNT(1) FROM cards`).Scan(&cards)
-	_ = d.SQL().QueryRow(`SELECT COUNT(1) FROM sentence_words`).Scan(&sw)
+	mustCount(t, d, `SELECT COUNT(1) FROM sentences`, &sents)
+	mustCount(t, d, `SELECT COUNT(1) FROM words`, &words)
+	mustCount(t, d, `SELECT COUNT(1) FROM cards`, &cards)
+	mustCount(t, d, `SELECT COUNT(1) FROM sentence_words`, &sw)
 	if sents < 2 {
 		t.Fatalf("sentences: %d", sents)
 	}
@@ -39,9 +39,59 @@ func TestStoreArticleCreatesSentencesNoCards(t *testing.T) {
 		t.Fatalf("want empty study tables words=%d cards=%d sw=%d", words, cards, sw)
 	}
 	var extracted int
-	_ = d.SQL().QueryRow(`SELECT COUNT(1) FROM sentences WHERE extracted_at IS NOT NULL`).Scan(&extracted)
+	mustCount(t, d, `SELECT COUNT(1) FROM sentences WHERE extracted_at IS NOT NULL AND extracted_at != ''`, &extracted)
 	if extracted != 0 {
 		t.Fatalf("extracted_at should be null: %d", extracted)
+	}
+}
+
+func TestStoreArticleDedupeNoExtraSentences(t *testing.T) {
+	d := openTestDB(t)
+	seedUser(t, d)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	src := db.SourceRef{Name: "src", FeedURL: "http://x"}
+	first, err := d.StoreArticle(db.LearnerUserID, src, db.ArticleInput{
+		ExternalID: "same",
+		RawText:    "経済。",
+		FetchedAt:  now,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := d.StoreArticle(db.LearnerUserID, src, db.ArticleInput{
+		ExternalID: "same",
+		RawText:    "政策。政策。政策。",
+		FetchedAt:  now.Add(time.Minute),
+	}, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Status != db.IngestExists || second.ArticleID != first.ArticleID {
+		t.Fatalf("second: %+v first=%d", second, first.ArticleID)
+	}
+	var sents int
+	mustCount(t, d, `SELECT COUNT(1) FROM sentences`, &sents)
+	if sents != 1 {
+		t.Fatalf("dedupe must not add sentences: %d", sents)
+	}
+}
+
+func TestStoreArticleValidation(t *testing.T) {
+	d := openTestDB(t)
+	seedUser(t, d)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	if _, err := d.StoreArticle(0, db.SourceRef{Name: "s"}, db.ArticleInput{ExternalID: "e", RawText: "x"}, now); err == nil {
+		t.Fatal("expected error for userID 0")
+	}
+	if _, err := d.StoreArticle(db.LearnerUserID, db.SourceRef{}, db.ArticleInput{ExternalID: "e", RawText: "x"}, now); err == nil {
+		t.Fatal("expected error for empty source name")
+	}
+	if _, err := d.StoreArticle(db.LearnerUserID, db.SourceRef{Name: "s"}, db.ArticleInput{RawText: "x"}, now); err == nil {
+		t.Fatal("expected error for empty external_id")
+	}
+	var nilDB *db.DB
+	if _, err := nilDB.StoreArticle(db.LearnerUserID, db.SourceRef{Name: "s"}, db.ArticleInput{ExternalID: "e", RawText: "x"}, now); err == nil {
+		t.Fatal("expected error for nil db")
 	}
 }
 
@@ -79,18 +129,31 @@ func TestExtractSentenceCreatesWordsAndCards(t *testing.T) {
 		t.Fatalf("cards_new: %d", er.CardsNew)
 	}
 	var cards int
-	_ = d.SQL().QueryRow(`SELECT COUNT(1) FROM cards WHERE user_id = 1`).Scan(&cards)
+	mustCount(t, d, `SELECT COUNT(1) FROM cards WHERE user_id = 1`, &cards)
 	if cards < 1 {
 		t.Fatal("expected cards")
 	}
+	if er.CardsNew != cards {
+		t.Fatalf("cards_new %d != cards %d on empty deck", er.CardsNew, cards)
+	}
+	if er.SentenceID != sid || er.ArticleID != store.ArticleID {
+		t.Fatalf("ids: %+v want sid=%d art=%d", er, sid, store.ArticleID)
+	}
 	var phase string
-	_ = d.SQL().QueryRow(`SELECT phase FROM cards LIMIT 1`).Scan(&phase)
+	if err := d.SQL().QueryRow(`SELECT phase FROM cards LIMIT 1`).Scan(&phase); err != nil {
+		t.Fatal(err)
+	}
 	if phase != "new" {
 		t.Fatalf("phase: %s", phase)
 	}
 	var ext string
 	if err := d.SQL().QueryRow(`SELECT extracted_at FROM sentences WHERE id = ?`, sid).Scan(&ext); err != nil || ext == "" {
 		t.Fatalf("extracted_at: %q err=%v", ext, err)
+	}
+	var sw int
+	mustCount(t, d, `SELECT COUNT(1) FROM sentence_words WHERE sentence_id = ?`, &sw, sid)
+	if sw < 1 {
+		t.Fatal("expected sentence_words")
 	}
 }
 
@@ -110,8 +173,9 @@ func TestExtractSentenceIdempotent(t *testing.T) {
 	if err := d.SQL().QueryRow(`SELECT id, extracted_at FROM sentences LIMIT 1`).Scan(&sid, &firstExt); err != nil {
 		t.Fatal(err)
 	}
-	var cards1 int
-	_ = d.SQL().QueryRow(`SELECT COUNT(1) FROM cards`).Scan(&cards1)
+	var cards1, sw1 int
+	mustCount(t, d, `SELECT COUNT(1) FROM cards`, &cards1)
+	mustCount(t, d, `SELECT COUNT(1) FROM sentence_words WHERE sentence_id = ?`, &sw1, sid)
 
 	er, err := d.ExtractSentence(db.LearnerUserID, sid, a, now.Add(time.Hour))
 	if err != nil {
@@ -123,13 +187,23 @@ func TestExtractSentenceIdempotent(t *testing.T) {
 	if er.CardsNew != 0 {
 		t.Fatalf("cards_new on re-extract: %d", er.CardsNew)
 	}
-	var cards2 int
-	_ = d.SQL().QueryRow(`SELECT COUNT(1) FROM cards`).Scan(&cards2)
+	if er.Candidates != sw1 {
+		// Noop re-tap reports existing sentence_words count as Candidates.
+		t.Fatalf("candidates on re-tap: got %d want %d (sentence_words)", er.Candidates, sw1)
+	}
+	var cards2, sw2 int
+	mustCount(t, d, `SELECT COUNT(1) FROM cards`, &cards2)
+	mustCount(t, d, `SELECT COUNT(1) FROM sentence_words WHERE sentence_id = ?`, &sw2, sid)
 	if cards2 != cards1 {
 		t.Fatalf("cards grew: %d → %d", cards1, cards2)
 	}
+	if sw2 != sw1 {
+		t.Fatalf("sentence_words count changed: %d → %d", sw1, sw2)
+	}
 	var secondExt string
-	_ = d.SQL().QueryRow(`SELECT extracted_at FROM sentences WHERE id = ?`, sid).Scan(&secondExt)
+	if err := d.SQL().QueryRow(`SELECT extracted_at FROM sentences WHERE id = ?`, sid).Scan(&secondExt); err != nil {
+		t.Fatal(err)
+	}
 	if secondExt != firstExt {
 		t.Fatalf("extracted_at changed: %q → %q", firstExt, secondExt)
 	}
@@ -218,9 +292,12 @@ func TestExtractSentenceEmptyOrKanaOnly(t *testing.T) {
 		t.Fatal("first extract")
 	}
 	var cards int
-	_ = d.SQL().QueryRow(`SELECT COUNT(1) FROM cards`).Scan(&cards)
+	mustCount(t, d, `SELECT COUNT(1) FROM cards`, &cards)
 	if cards != 0 {
 		t.Fatalf("kana-only should not create cards: %d", cards)
+	}
+	if er.Candidates != 0 {
+		t.Fatalf("candidates: %d want 0", er.Candidates)
 	}
 	var ext string
 	if err := d.SQL().QueryRow(`SELECT extracted_at FROM sentences WHERE id = ?`, sid).Scan(&ext); err != nil || ext == "" {
@@ -235,9 +312,25 @@ func TestExtractSentenceNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = d.ExtractSentence(db.LearnerUserID, 99999, a, time.Now().UTC())
+	_, err = d.ExtractSentence(db.LearnerUserID, 99999, a, time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC))
 	if !errors.Is(err, db.ErrSentenceNotFound) {
 		t.Fatalf("got %v want ErrSentenceNotFound", err)
+	}
+}
+
+func TestExtractSentenceValidation(t *testing.T) {
+	d := openTestDB(t)
+	seedUser(t, d)
+	a, err := analyze.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	if _, err := d.ExtractSentence(0, 1, a, now); err == nil {
+		t.Fatal("expected error for userID 0")
+	}
+	if _, err := d.ExtractSentence(db.LearnerUserID, 0, a, now); err == nil {
+		t.Fatal("expected error for sentenceID 0")
 	}
 }
 
@@ -267,10 +360,7 @@ func TestExtractSentenceArticleMismatch(t *testing.T) {
 	}
 }
 
-func TestMigrationBackfillExtractedAt(t *testing.T) {
-	// Migration runs on Open; PersistCandidates path sets extracted_at on new DBs.
-	// Simulate legacy: insert sentence + sentence_words without extracted_at, re-open
-	// is hard mid-test; instead verify 003 applied and backfill SQL is valid via schema.
+func TestMigration003RecordedAndColumnExists(t *testing.T) {
 	d := openTestDB(t)
 	var n int
 	if err := d.SQL().QueryRow(
@@ -278,8 +368,138 @@ func TestMigrationBackfillExtractedAt(t *testing.T) {
 	).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("migration 003: n=%d err=%v", n, err)
 	}
-	// Column exists
 	if _, err := d.SQL().Exec(`SELECT extracted_at FROM sentences LIMIT 0`); err != nil {
 		t.Fatalf("extracted_at column: %v", err)
+	}
+}
+
+// Backfill logic from 003_sentence_extract.sql (same SQL) on legacy-shaped rows.
+func TestExtractedAtBackfillSQL(t *testing.T) {
+	d := openTestDB(t)
+	seedUser(t, d)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	nowStr := now.UTC().Format(time.RFC3339)
+	srcID, err := d.EnsureSource("legacy", "http://x", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ar, err := d.SQL().Exec(
+		`INSERT INTO articles (source_id, external_id, title, url, fetched_at, raw_text)
+		 VALUES (?, 'leg-1', 't', '', ?, '経済。')`, srcID, nowStr,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aid, _ := ar.LastInsertId()
+	sr, err := d.SQL().Exec(
+		`INSERT INTO sentences (article_id, text, order_index, extracted_at) VALUES (?, '経済。', 0, NULL)`,
+		aid,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sid, _ := sr.LastInsertId()
+	wr, err := d.SQL().Exec(`INSERT INTO words (lemma, reading) VALUES ('経済', 'けいざい')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wid, _ := wr.LastInsertId()
+	if _, err := d.SQL().Exec(
+		`INSERT INTO sentence_words (sentence_id, word_id, surface, char_start, char_end, created_at)
+		 VALUES (?, ?, '経済', 0, 2, ?)`, sid, wid, nowStr,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// Same statement as migrations/003_sentence_extract.sql backfill.
+	if _, err := d.SQL().Exec(`
+		UPDATE sentences SET extracted_at = (
+			SELECT MIN(sw.created_at) FROM sentence_words sw WHERE sw.sentence_id = sentences.id
+		)
+		WHERE EXISTS (SELECT 1 FROM sentence_words sw WHERE sw.sentence_id = sentences.id)
+		  AND extracted_at IS NULL`); err != nil {
+		t.Fatal(err)
+	}
+	var ext string
+	if err := d.SQL().QueryRow(`SELECT extracted_at FROM sentences WHERE id = ?`, sid).Scan(&ext); err != nil {
+		t.Fatal(err)
+	}
+	if ext != nowStr {
+		t.Fatalf("backfill extracted_at: got %q want %q", ext, nowStr)
+	}
+}
+
+func TestExtractAfterStoreDedupeKeepsCards(t *testing.T) {
+	d := openTestDB(t)
+	seedUser(t, d)
+	a, err := analyze.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	src := db.SourceRef{Name: "nhk_main", FeedURL: "http://x"}
+	art := db.ArticleInput{ExternalID: "g1", RawText: "経済政策を発表した。", FetchedAt: now}
+	first, err := d.StoreArticle(db.LearnerUserID, src, art, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sid int64
+	if err := d.SQL().QueryRow(`SELECT id FROM sentences WHERE article_id = ?`, first.ArticleID).Scan(&sid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ExtractSentence(db.LearnerUserID, sid, a, now); err != nil {
+		t.Fatal(err)
+	}
+	var cards1 int
+	mustCount(t, d, `SELECT COUNT(1) FROM cards`, &cards1)
+	if cards1 < 1 {
+		t.Fatal("need cards after extract")
+	}
+	// Re-scrape same guid must not wipe library or cards.
+	second, err := d.StoreArticle(db.LearnerUserID, src, art, now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Status != db.IngestExists {
+		t.Fatalf("status: %v", second.Status)
+	}
+	var cards2 int
+	mustCount(t, d, `SELECT COUNT(1) FROM cards`, &cards2)
+	if cards2 != cards1 {
+		t.Fatalf("cards after re-store: %d want %d", cards2, cards1)
+	}
+	var ext string
+	if err := d.SQL().QueryRow(`SELECT extracted_at FROM sentences WHERE id = ?`, sid).Scan(&ext); err != nil || ext == "" {
+		t.Fatalf("extracted_at lost: %q %v", ext, err)
+	}
+}
+
+func TestLibraryCountsZeroCardsAfterStoreOnly(t *testing.T) {
+	d := openTestDB(t)
+	seedUser(t, d)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	if _, err := d.StoreArticle(db.LearnerUserID, db.SourceRef{Name: "s"}, db.ArticleInput{
+		ExternalID: "e",
+		RawText:    "経済政策を発表した。",
+		FetchedAt:  now,
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	c, err := d.LibraryCounts(db.LearnerUserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Articles < 1 || c.Sentences < 1 {
+		t.Fatalf("library: %+v", c)
+	}
+	if c.Cards != 0 || c.Words != 0 {
+		t.Fatalf("store-only must not create study rows: %+v", c)
+	}
+}
+
+func mustCount(t *testing.T, d *db.DB, q string, dest *int, args ...any) {
+	t.Helper()
+	if err := d.SQL().QueryRow(q, args...).Scan(dest); err != nil {
+		t.Fatalf("count %q: %v", q, err)
 	}
 }

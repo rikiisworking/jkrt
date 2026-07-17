@@ -162,6 +162,10 @@ func (d *DB) IngestArticle(userID int64, src SourceRef, art ArticleInput, a *ana
 // Source "manual", then extract every Sentence (creates Words/Cards).
 // Used by tests and any manual ingest that should immediately enter the queue.
 // User-facing Scrape uses StoreArticle / IngestArticle without extract.
+//
+// Not a single transaction: StoreArticle commits, then each ExtractSentence commits.
+// If extract fails mid-way, the Article/Sentences remain with a partial set extracted.
+// Callers that need all-or-nothing should not use this helper for product-facing flows.
 func (d *DB) IngestText(userID int64, text string, a *analyze.Analyzer, now time.Time) (IngestResult, error) {
 	if a == nil {
 		return IngestResult{}, fmt.Errorf("analyzer is nil")
@@ -267,17 +271,21 @@ func (d *DB) ExtractSentenceForArticle(userID, articleID, sentenceID int64, a *a
 		AlreadyExtracted: already,
 	}
 
+	// Pure noop re-tap: do not re-analyze or wipe sentence_words (ADR review fix).
+	if already {
+		var n int
+		if err := d.sql.QueryRow(
+			`SELECT COUNT(1) FROM sentence_words WHERE sentence_id = ?`, sentenceID,
+		).Scan(&n); err != nil {
+			return ExtractResult{}, fmt.Errorf("count sentence_words: %w", err)
+		}
+		out.Candidates = n
+		out.CardsNew = 0
+		return out, nil
+	}
+
 	cands, err := a.Candidates(text)
 	if err != nil {
-		return ExtractResult{}, err
-	}
-	out.Candidates = countWordCandidates(cands)
-
-	// Count cards before persist to compute CardsNew.
-	var cardsBefore int
-	if err := d.sql.QueryRow(
-		`SELECT COUNT(1) FROM cards WHERE user_id = ?`, userID,
-	).Scan(&cardsBefore); err != nil {
 		return ExtractResult{}, err
 	}
 
@@ -287,46 +295,25 @@ func (d *DB) ExtractSentenceForArticle(userID, articleID, sentenceID int64, a *a
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if err := persistCandidatesTx(tx, userID, sentenceID, cands, now, d.scheduleParams()); err != nil {
+	cardsNew, candCount, err := persistCandidatesTx(tx, userID, sentenceID, cands, now, d.scheduleParams())
+	if err != nil {
 		return ExtractResult{}, err
 	}
+	out.Candidates = candCount
+	out.CardsNew = cardsNew
 
-	// Keep first extracted_at on re-extract (idempotent timestamp).
-	if !already {
-		nowStr := now.UTC().Format(time.RFC3339)
-		if _, err := tx.Exec(
-			`UPDATE sentences SET extracted_at = ? WHERE id = ? AND (extracted_at IS NULL OR extracted_at = '')`,
-			nowStr, sentenceID,
-		); err != nil {
-			return ExtractResult{}, fmt.Errorf("set extracted_at: %w", err)
-		}
+	nowStr := now.UTC().Format(time.RFC3339)
+	if _, err := tx.Exec(
+		`UPDATE sentences SET extracted_at = ? WHERE id = ? AND (extracted_at IS NULL OR extracted_at = '')`,
+		nowStr, sentenceID,
+	); err != nil {
+		return ExtractResult{}, fmt.Errorf("set extracted_at: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
 		return ExtractResult{}, fmt.Errorf("commit: %w", err)
 	}
-
-	var cardsAfter int
-	if err := d.sql.QueryRow(
-		`SELECT COUNT(1) FROM cards WHERE user_id = ?`, userID,
-	).Scan(&cardsAfter); err != nil {
-		return ExtractResult{}, err
-	}
-	out.CardsNew = cardsAfter - cardsBefore
-	if out.CardsNew < 0 {
-		out.CardsNew = 0
-	}
 	return out, nil
-}
-
-func countWordCandidates(cands []analyze.Candidate) int {
-	n := 0
-	for _, c := range cands {
-		if analyze.IsWordCandidate(c.Surface, c.Reading) {
-			n++
-		}
-	}
-	return n
 }
 
 // EnsureSource inserts a news_sources row by name if missing and returns its id.
@@ -364,7 +351,7 @@ func (d *DB) PersistCandidates(userID, sentenceID int64, candidates []analyze.Ca
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if err := persistCandidatesTx(tx, userID, sentenceID, candidates, now, d.scheduleParams()); err != nil {
+	if _, _, err := persistCandidatesTx(tx, userID, sentenceID, candidates, now, d.scheduleParams()); err != nil {
 		return err
 	}
 	// Mark extracted when using low-level PersistCandidates (tests).
@@ -389,12 +376,14 @@ func newManualExternalID() (string, error) {
 	return "manual-" + hex.EncodeToString(b[:]), nil
 }
 
-func persistCandidatesTx(tx *sql.Tx, userID, sentenceID int64, candidates []analyze.Candidate, now time.Time, params schedule.Params) error {
+// persistCandidatesTx writes sentence_words + new Cards.
+// Returns cardsNew (RowsAffected inserts only) and word-candidate count.
+func persistCandidatesTx(tx *sql.Tx, userID, sentenceID int64, candidates []analyze.Candidate, now time.Time, params schedule.Params) (cardsNew, candCount int, err error) {
 	nowStr := now.UTC().Format(time.RFC3339)
 
-	// Re-extract replaces occurrence rows for this sentence (no duplicates).
+	// Replace occurrence rows for this sentence (no duplicates).
 	if _, err := tx.Exec(`DELETE FROM sentence_words WHERE sentence_id = ?`, sentenceID); err != nil {
-		return fmt.Errorf("clear sentence_words: %w", err)
+		return 0, 0, fmt.Errorf("clear sentence_words: %w", err)
 	}
 
 	for _, c := range candidates {
@@ -411,10 +400,11 @@ func persistCandidatesTx(tx *sql.Tx, userID, sentenceID int64, candidates []anal
 		if lemma == "" || analyze.IsMeCabPlaceholder(lemma) {
 			continue
 		}
+		candCount++
 
 		wordID, err := upsertWord(tx, lemma, reading)
 		if err != nil {
-			return err
+			return 0, 0, err
 		}
 
 		if _, err := tx.Exec(
@@ -422,14 +412,18 @@ func persistCandidatesTx(tx *sql.Tx, userID, sentenceID int64, candidates []anal
 			 VALUES (?, ?, ?, ?, ?, ?)`,
 			sentenceID, wordID, surface, c.CharStart, c.CharEnd, nowStr,
 		); err != nil {
-			return fmt.Errorf("insert sentence_word: %w", err)
+			return 0, 0, fmt.Errorf("insert sentence_word: %w", err)
 		}
 
-		if err := upsertNewCard(tx, userID, wordID, now, params); err != nil {
-			return err
+		inserted, err := upsertNewCard(tx, userID, wordID, now, params)
+		if err != nil {
+			return 0, 0, err
+		}
+		if inserted {
+			cardsNew++
 		}
 	}
-	return nil
+	return cardsNew, candCount, nil
 }
 
 func ensureSource(q execQuerier, name, feedURL, notes string) (int64, error) {
@@ -519,12 +513,13 @@ func upsertWord(q execQuerier, lemma, reading string) (int64, error) {
 	return res.LastInsertId()
 }
 
-func upsertNewCard(q execQuerier, userID, wordID int64, now time.Time, params schedule.Params) error {
+// upsertNewCard inserts a new Card if missing. Returns true when a row was inserted.
+func upsertNewCard(q execQuerier, userID, wordID int64, now time.Time, params schedule.Params) (inserted bool, err error) {
 	// New Card defaults only from schedule.NewCard (sm2-spec / ADR 0005).
 	st := schedule.NewCard(params, now)
 	nowStr := now.UTC().Format(time.RFC3339)
 	dueStr := st.DueAt.UTC().Format(time.RFC3339)
-	_, err := q.Exec(
+	res, err := q.Exec(
 		`INSERT INTO cards (
 			user_id, word_id, phase, learning_step, interval_days, ease,
 			due_at, reps, lapses, created_at, updated_at
@@ -535,7 +530,11 @@ func upsertNewCard(q execQuerier, userID, wordID int64, now time.Time, params sc
 		dueStr, st.Reps, st.Lapses, nowStr, nowStr,
 	)
 	if err != nil {
-		return fmt.Errorf("insert card: %w", err)
+		return false, fmt.Errorf("insert card: %w", err)
 	}
-	return nil
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("card rows affected: %w", err)
+	}
+	return n > 0, nil
 }

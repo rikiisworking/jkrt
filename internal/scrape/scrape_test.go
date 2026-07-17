@@ -413,11 +413,16 @@ func TestScrapeNilDeps(t *testing.T) {
 		t.Fatalf("nil db: %+v", res.Sources[0])
 	}
 
-	// nil analyzer
-	s = scrape.New(d, nil, []scrape.Source{{Name: "x", FeedURL: "https://x"}}, client)
+	// nil analyzer is OK (store-only scrape; no Kagome on scrape path)
+	s = scrape.New(d, nil, []scrape.Source{{
+		Name:    "nil-ana",
+		FeedURL: "https://fixture.test/empty.xml",
+	}}, &http.Client{Transport: fixedTransport{
+		"https://fixture.test/empty.xml": []byte(`<?xml version="1.0"?><rss version="2.0"><channel></channel></rss>`),
+	}})
 	res = s.Run(ctx, now)
-	if res.Sources[0].OK || !strings.Contains(res.Sources[0].Error, "analyzer") {
-		t.Fatalf("nil analyzer: %+v", res.Sources[0])
+	if !res.Sources[0].OK {
+		t.Fatalf("nil analyzer should store-only succeed: %+v", res.Sources[0])
 	}
 
 	// empty source name

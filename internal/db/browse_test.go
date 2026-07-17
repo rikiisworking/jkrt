@@ -105,6 +105,48 @@ func TestBrowseListAndDetail(t *testing.T) {
 	if sents[0].Text == "" {
 		t.Fatal("empty sentence text")
 	}
+	// IngestText extracts all sentences → Extracted flag set.
+	if !sents[0].Extracted || sents[0].ExtractedAt == "" {
+		t.Fatalf("expected extracted sentence after IngestText: %+v", sents[0])
+	}
+}
+
+func TestBrowseExtractedFlagBeforeAndAfterExtract(t *testing.T) {
+	d := openTestDB(t)
+	seedUser(t, d)
+	a, err := analyze.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	store, err := d.StoreArticle(db.LearnerUserID, db.SourceRef{Name: "s"}, db.ArticleInput{
+		ExternalID: "e",
+		RawText:    "経済政策を発表した。",
+		FetchedAt:  now,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, sents, found, err := d.GetArticle(store.ArticleID)
+	if err != nil || !found {
+		t.Fatal(err)
+	}
+	if len(sents) < 1 {
+		t.Fatal("need sentence")
+	}
+	if sents[0].Extracted {
+		t.Fatal("store-only sentence must not be extracted")
+	}
+	if _, err := d.ExtractSentence(db.LearnerUserID, sents[0].ID, a, now); err != nil {
+		t.Fatal(err)
+	}
+	_, sents2, _, err := d.GetArticle(store.ArticleID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sents2[0].Extracted || sents2[0].ExtractedAt == "" {
+		t.Fatalf("after extract: %+v", sents2[0])
+	}
 }
 
 // ListArticles(limit<=0) uses DefaultArticleListLimit; newest fetched_at first.

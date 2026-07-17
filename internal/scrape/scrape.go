@@ -1,4 +1,4 @@
-// Package scrape fetches configured RSS feeds and ingests Articles via db.IngestArticle.
+// Package scrape fetches configured RSS feeds and stores Articles/Sentences via db.StoreArticle.
 package scrape
 
 import (
@@ -63,11 +63,13 @@ type Result struct {
 	Sources []SourceResult `json:"sources"`
 }
 
-// Scraper fetches every configured Source and calls IngestArticle per item.
+// Scraper fetches every configured Source and stores Articles/Sentences only
+// (extract-on-tap / ADR 0006). Analyzer is unused on the scrape path; kept on
+// the struct for call-site compatibility with scrape.New(..., ana, ...).
 type Scraper struct {
 	Client   HTTPDoer
 	DB       *db.DB
-	Analyzer *analyze.Analyzer
+	Analyzer *analyze.Analyzer // optional; not used by Run (store-only)
 	Sources  []Source
 	Timeout  time.Duration // request context timeout per feed when Client has no timeout
 	UserID   int64
@@ -165,10 +167,7 @@ func (s *Scraper) scrapeOne(ctx context.Context, userID int64, src Source, now t
 		res.Error = "database is nil"
 		return res
 	}
-	if s.Analyzer == nil {
-		res.Error = "analyzer is nil"
-		return res
-	}
+	// Analyzer is optional: scrape is store-only (ADR 0006); extract uses HTTP analyzer.
 	if s.Client == nil {
 		res.Error = "http client is nil"
 		return res
@@ -195,13 +194,13 @@ func (s *Scraper) scrapeOne(ctx context.Context, userID int64, src Source, now t
 			// Nothing useful to store; skip without failing the source.
 			continue
 		}
-		ing, err := s.DB.IngestArticle(userID, srcRef, db.ArticleInput{
+		ing, err := s.DB.StoreArticle(userID, srcRef, db.ArticleInput{
 			ExternalID: extID,
 			Title:      it.Title,
 			URL:        it.Link,
 			RawText:    raw,
 			FetchedAt:  now,
-		}, s.Analyzer, now)
+		}, now)
 		if err != nil {
 			res.Error = fmt.Sprintf("ingest %s: %v", extID, err)
 			res.ItemsNew = newCount

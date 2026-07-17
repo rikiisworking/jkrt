@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -34,6 +35,8 @@ type SentenceListItem struct {
 	Extracted bool
 	// ExtractedAt is RFC3339 when set; empty if not extracted.
 	ExtractedAt string
+	// WordCount is number of sentence_words rows (0 if never extracted or no kanji words).
+	WordCount int
 }
 
 // DefaultArticleListLimit caps the articles browse list.
@@ -99,10 +102,11 @@ func (d *DB) GetArticle(id int64) (ArticleDetail, []SentenceListItem, bool, erro
 	}
 
 	rows, err := d.sql.Query(`
-		SELECT id, text, order_index, extracted_at
-		FROM sentences
-		WHERE article_id = ?
-		ORDER BY order_index ASC, id ASC`, id)
+		SELECT s.id, s.text, s.order_index, s.extracted_at,
+		       (SELECT COUNT(1) FROM sentence_words sw WHERE sw.sentence_id = s.id)
+		FROM sentences s
+		WHERE s.article_id = ?
+		ORDER BY s.order_index ASC, s.id ASC`, id)
 	if err != nil {
 		return ArticleDetail{}, nil, false, fmt.Errorf("list sentences: %w", err)
 	}
@@ -112,7 +116,7 @@ func (d *DB) GetArticle(id int64) (ArticleDetail, []SentenceListItem, bool, erro
 	for rows.Next() {
 		var s SentenceListItem
 		var ext sql.NullString
-		if err := rows.Scan(&s.ID, &s.Text, &s.OrderIndex, &ext); err != nil {
+		if err := rows.Scan(&s.ID, &s.Text, &s.OrderIndex, &ext, &s.WordCount); err != nil {
 			return ArticleDetail{}, nil, false, fmt.Errorf("scan sentence: %w", err)
 		}
 		if ext.Valid && strings.TrimSpace(ext.String) != "" {
@@ -128,6 +132,32 @@ func (d *DB) GetArticle(id int64) (ArticleDetail, []SentenceListItem, bool, erro
 		sents = []SentenceListItem{}
 	}
 	return art, sents, true, nil
+}
+
+// GetSentence returns one Sentence if it belongs to articleID.
+func (d *DB) GetSentence(articleID, sentenceID int64) (SentenceListItem, bool, error) {
+	if d == nil || d.sql == nil {
+		return SentenceListItem{}, false, fmt.Errorf("db is nil")
+	}
+	var s SentenceListItem
+	var ext sql.NullString
+	err := d.sql.QueryRow(`
+		SELECT s.id, s.text, s.order_index, s.extracted_at,
+		       (SELECT COUNT(1) FROM sentence_words sw WHERE sw.sentence_id = s.id)
+		FROM sentences s
+		WHERE s.id = ? AND s.article_id = ?`, sentenceID, articleID,
+	).Scan(&s.ID, &s.Text, &s.OrderIndex, &ext, &s.WordCount)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SentenceListItem{}, false, nil
+	}
+	if err != nil {
+		return SentenceListItem{}, false, fmt.Errorf("get sentence: %w", err)
+	}
+	if ext.Valid && strings.TrimSpace(ext.String) != "" {
+		s.Extracted = true
+		s.ExtractedAt = ext.String
+	}
+	return s, true, nil
 }
 
 // LastArticleFetchedAt returns the newest articles.fetched_at (any Source).

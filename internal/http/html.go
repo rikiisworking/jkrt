@@ -381,16 +381,23 @@ func sentenceRowHTML(articleID int64, s db.SentenceListItem, last db.ExtractResu
 	}
 
 	if s.Extracted {
+		// "In queue" only when Words/Cards were linked; zero-candidate extracts are marked only.
+		inQueue := s.WordCount > 0 || (last.SentenceID == s.ID && last.Candidates > 0)
+		badge := `<span class="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">No study words</span>`
+		if inQueue {
+			badge = `<span class="rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">In queue</span>`
+		}
 		return fmt.Sprintf(`
       <li id="%s" class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
         <div class="flex flex-wrap items-start justify-between gap-2">
           <p class="text-xs text-slate-400">Sentence</p>
-          <span class="rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">In queue</span>
+          %s
         </div>
         <p class="mt-1 text-base leading-relaxed text-slate-900" lang="ja">%s</p>
         %s
       </li>`,
 			idAttr,
+			badge,
 			html.EscapeString(s.Text),
 			meta,
 		)

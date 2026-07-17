@@ -189,7 +189,7 @@ Migrations: `migrations/001_init.sql`, applied on startup.
 
 - **No I/O.** Golden tests G1–G9 from the spec.
 - **`Params` / `DefaultParams()`** — all normative knobs (learning steps, ease, intervals, `NewPerDay`, `SessionLimit`, …). v1: construct review with `DefaultParams()`; env overrides (`JKRT_NEW_PER_DAY`, etc.) optional later without changing next/grade.
-- **`NewCard(params, now) → state`** — seed fields for extract (`phase=new`, ease, `due_at=now`, …). **`db.IngestArticle` must use this** — do not re-fork defaults in SQL.
+- **`NewCard(params, now) → state`** — seed fields for Sentence extract (`phase=new`, ease, `due_at=now`, …). **`db.ExtractSentence` / `persistCandidatesTx` must use this** (not Scrape/`StoreArticle`) — do not re-fork defaults in SQL.
 - **`Apply(params, state, grade, now) → state`** — single pure transition; id-free card state (phase, learning_step, interval_days, ease, due_at, reps, lapses).
 - **`IsUnfamiliar(state, now) bool`** — locked highlight predicate (spec). Lives here, not in `db`.
 
@@ -361,7 +361,7 @@ When `JKRT_AUTH=on`, unauthenticated requests to protected routes → **401** (A
 | POST | `/review` | yes | 3 | form `card_id`, `grade`, `sentence_id`, **`card_updated_at`** | `302` `/review` (re-**next**) or `200` HTMX **partial** (`#review-main`); stale double-submit re-nexts; bad input → 4xx |
 | GET | `/articles` | yes | 4 | — | `200` HTML article list (newest first) or empty state |
 | GET | `/articles/:id` | yes | 4 | path id | `200` HTML Article + Sentences (Add to review / In queue); missing → `404` HTML |
-| POST | `/articles/:id/sentences/:sid/extract` | yes | 7 | empty body | Extract sentence → Words/Cards; **HTMX** → `200` sentence row; else `302` `/articles/:id`; wrong ownership/`sid` → `404` |
+| POST | `/articles/:id/sentences/:sid/extract` | yes | ADR 0006 | empty body | Extract sentence → Words/Cards; **HTMX** → `200` sentence row; else `302` `/articles/:id`; wrong ownership/`sid` → `404` |
 
 \*When auth off, `/` is open.
 
