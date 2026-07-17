@@ -70,7 +70,7 @@ To add another feed later: append a `Source` in `internal/scrape.DefaultSources`
 
 ### Scrape logic
 
-User-triggered only (`POST /api/scrape` or the dashboard button). There is **no background crawl**. Code: `internal/scrape` → `db.IngestArticle` → `internal/analyze` (Kagome).
+User-triggered only (`POST /api/scrape` or the dashboard button). There is **no background crawl**. Code: `internal/scrape` → `db.StoreArticle` (library only). Kagome runs later on **Sentence extract**.
 
 #### One Scrape = every source, in order
 
@@ -116,7 +116,7 @@ flowchart TD
 
   Each --> Raw{RawText empty?<br/>title + description<br/>+ content:encoded}
   Raw -->|yes| Skip[Skip item<br/>do not fail source]
-  Raw -->|no| Ingest[db.IngestArticle]
+  Raw -->|no| Ingest[db.StoreArticle]
 
   Ingest --> Dedupe{UNIQUE<br/>source_id + external_id}
   Dedupe -->|exists| Exists[IngestExists<br/>no re-analyze]
@@ -182,7 +182,8 @@ flowchart LR
 
 Dedupe key: **`(source_id, external_id)`** where `external_id` is RSS `guid`, else `link`. Re-scrape is safe: existing articles are not re-analyzed.
 
-Package map for this path: `internal/http` (route) → `internal/scrape` (fetch/parse loop) → `internal/db` (`IngestArticle`) → `internal/analyze` (Kagome) → SQLite.
+Package map for this path: `internal/http` (route) → `internal/scrape` (fetch/parse loop) → `internal/db.StoreArticle` → SQLite.  
+Study path: Articles UI → `ExtractSentence` → `internal/analyze` (Kagome) → Words/Cards.
 
 ### Runtime stack
 

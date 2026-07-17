@@ -1,4 +1,5 @@
 // Package scrape fetches configured RSS feeds and stores Articles/Sentences via db.StoreArticle.
+// Store-only (ADR 0006): no morphological analysis and no Cards on Scrape.
 package scrape
 
 import (
@@ -10,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rikiisworking/jkrt/internal/analyze"
 	"github.com/rikiisworking/jkrt/internal/db"
 )
 
@@ -64,15 +64,13 @@ type Result struct {
 }
 
 // Scraper fetches every configured Source and stores Articles/Sentences only
-// (extract-on-tap / ADR 0006). Analyzer is unused on the scrape path; kept on
-// the struct for call-site compatibility with scrape.New(..., ana, ...).
+// (extract-on-tap / ADR 0006). Analysis and Cards happen later via Sentence extract.
 type Scraper struct {
-	Client   HTTPDoer
-	DB       *db.DB
-	Analyzer *analyze.Analyzer // optional; not used by Run (store-only)
-	Sources  []Source
-	Timeout  time.Duration // request context timeout per feed when Client has no timeout
-	UserID   int64
+	Client  HTTPDoer
+	DB      *db.DB
+	Sources []Source
+	Timeout time.Duration // request context timeout per feed when Client has no timeout
+	UserID  int64
 }
 
 // DefaultSources returns the built-in multi-publisher RSS list.
@@ -113,7 +111,7 @@ func DefaultSources(mainURL, easyURL string) []Source {
 }
 
 // New builds a Scraper with defaults. client may be nil (*http.Client with DefaultTimeout).
-func New(database *db.DB, ana *analyze.Analyzer, sources []Source, client HTTPDoer) *Scraper {
+func New(database *db.DB, sources []Source, client HTTPDoer) *Scraper {
 	if client == nil {
 		client = &http.Client{Timeout: DefaultTimeout}
 	}
@@ -121,12 +119,11 @@ func New(database *db.DB, ana *analyze.Analyzer, sources []Source, client HTTPDo
 		sources = DefaultSources(DefaultMainRSSURL, "")
 	}
 	return &Scraper{
-		Client:   client,
-		DB:       database,
-		Analyzer: ana,
-		Sources:  sources,
-		Timeout:  DefaultTimeout,
-		UserID:   db.LearnerUserID,
+		Client:  client,
+		DB:      database,
+		Sources: sources,
+		Timeout: DefaultTimeout,
+		UserID:  db.LearnerUserID,
 	}
 }
 
@@ -167,7 +164,6 @@ func (s *Scraper) scrapeOne(ctx context.Context, userID int64, src Source, now t
 		res.Error = "database is nil"
 		return res
 	}
-	// Analyzer is optional: scrape is store-only (ADR 0006); extract uses HTTP analyzer.
 	if s.Client == nil {
 		res.Error = "http client is nil"
 		return res

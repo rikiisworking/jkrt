@@ -316,12 +316,12 @@ func TestIngestNilAnalyzer(t *testing.T) {
 		t.Fatal("expected nil analyzer error from IngestText")
 	}
 	// Store/scrape path does not need analyzer.
-	if _, err := d.IngestArticle(db.LearnerUserID, db.SourceRef{Name: "t"}, db.ArticleInput{
+	if _, err := d.StoreArticle(db.LearnerUserID, db.SourceRef{Name: "t"}, db.ArticleInput{
 		ExternalID: "e1",
 		RawText:    "経済",
 		FetchedAt:  now,
-	}, nil, now); err != nil {
-		t.Fatalf("IngestArticle store-only should accept nil analyzer: %v", err)
+	}, now); err != nil {
+		t.Fatalf("StoreArticle should not need analyzer: %v", err)
 	}
 	if _, err := d.ExtractSentence(db.LearnerUserID, 1, nil, now); err == nil {
 		t.Fatal("expected nil analyzer error from ExtractSentence")
@@ -539,13 +539,9 @@ func TestEnsureSourceIdempotent(t *testing.T) {
 	}
 }
 
-func TestIngestArticleDedupe(t *testing.T) {
+func TestStoreArticleDedupeFromIngest(t *testing.T) {
 	d := openTestDB(t)
 	seedUser(t, d)
-	a, err := analyze.New()
-	if err != nil {
-		t.Fatal(err)
-	}
 	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
 	src := db.SourceRef{Name: "nhk_main", FeedURL: "http://example.test/main"}
 	art := db.ArticleInput{
@@ -556,7 +552,7 @@ func TestIngestArticleDedupe(t *testing.T) {
 		FetchedAt:  now,
 	}
 
-	first, err := d.IngestArticle(db.LearnerUserID, src, art, a, now)
+	first, err := d.StoreArticle(db.LearnerUserID, src, art, now)
 	if err != nil {
 		t.Fatalf("first: %v", err)
 	}
@@ -588,13 +584,13 @@ func TestIngestArticleDedupe(t *testing.T) {
 	}
 
 	// Same external_id: Exists, no re-store (sentence counts stable).
-	second, err := d.IngestArticle(db.LearnerUserID, src, db.ArticleInput{
+	second, err := d.StoreArticle(db.LearnerUserID, src, db.ArticleInput{
 		ExternalID: "guid-1",
 		Title:      "changed title ignored",
 		URL:        "http://y",
 		RawText:    "市場は反応した。", // would add sentences if re-stored
 		FetchedAt:  now.Add(time.Minute),
-	}, a, now.Add(time.Minute))
+	}, now.Add(time.Minute))
 	if err != nil {
 		t.Fatalf("second: %v", err)
 	}
@@ -614,12 +610,12 @@ func TestIngestArticleDedupe(t *testing.T) {
 	}
 
 	// Different external_id on same Source → Created again.
-	third, err := d.IngestArticle(db.LearnerUserID, src, db.ArticleInput{
+	third, err := d.StoreArticle(db.LearnerUserID, src, db.ArticleInput{
 		ExternalID: "guid-2",
 		Title:      "政策。",
 		RawText:    "政策。",
 		FetchedAt:  now,
-	}, a, now)
+	}, now)
 	if err != nil {
 		t.Fatalf("third: %v", err)
 	}
@@ -635,25 +631,6 @@ func TestIngestArticleDedupe(t *testing.T) {
 	}
 	if articles != 2 {
 		t.Fatalf("articles=%d want 2", articles)
-	}
-}
-
-func TestIngestArticleValidation(t *testing.T) {
-	d := openTestDB(t)
-	seedUser(t, d)
-	a, err := analyze.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
-	if _, err := d.IngestArticle(0, db.SourceRef{Name: "s"}, db.ArticleInput{ExternalID: "e", RawText: "x"}, a, now); err == nil {
-		t.Fatal("expected userID error")
-	}
-	if _, err := d.IngestArticle(db.LearnerUserID, db.SourceRef{}, db.ArticleInput{ExternalID: "e", RawText: "x"}, a, now); err == nil {
-		t.Fatal("expected source name error")
-	}
-	if _, err := d.IngestArticle(db.LearnerUserID, db.SourceRef{Name: "s"}, db.ArticleInput{RawText: "x"}, a, now); err == nil {
-		t.Fatal("expected external_id error")
 	}
 }
 

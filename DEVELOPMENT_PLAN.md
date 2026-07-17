@@ -212,7 +212,7 @@ Small external interface (HTTP + tests cross the same seam):
 
 ### `internal/db` (ingest unchanged shape)
 
-- Keep deep **`IngestArticle`** — do not split into shallow services.
+- Keep deep **`StoreArticle`** + **`ExtractSentence`** (ADR 0006) — do not re-fork Card defaults outside `schedule.NewCard`.
 - New Card rows: persist **`schedule.NewCard`** output. Remove package-local forked ease/unfamiliar once schedule exists.
 
 ---
@@ -433,12 +433,12 @@ curl -sS -b /tmp/jkrt-cj -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8080/
 - [x] Empty reading skipped
 - [x] No live RSS (string/fixture analyze only)
 - [x] Deep Article ingest interface (pre–Phase 2):
-  - `db.IngestArticle` — Source + Article → Sentences → Words/Cards; returns `IngestCreated` \| `IngestExists`
+  - `db.StoreArticle` — Source + Article → Sentences only; returns `IngestCreated` \| `IngestExists` (Words/Cards via `ExtractSentence`, ADR 0006)
   - `db.IngestText` — library/manual path (unique external_id; always Created)
   - Dedupe on `(source_id, external_id)`: Exists skips re-extract (no analyze)
   - Single SQL path via shared querier helpers (no public/tx twin pairs)
 
-**Tests:** analyze fixture sentence; UNIQUE(lemma, reading); skip empty reading; card row on extract; IngestArticle dedupe.
+**Tests:** analyze fixture sentence; UNIQUE(lemma, reading); skip empty reading; card row on extract; StoreArticle dedupe.
 
 **Acceptance:**
 
@@ -447,14 +447,14 @@ go test ./internal/analyze/... ./internal/db/... -count=1
 # all pass; includes Japanese fixture 経済政策を発表した。
 ```
 
-**Deliverable:** `IngestText` / `IngestArticle` → sentences → words/cards in SQLite.
+**Deliverable (historical Phase 1):** library ingest + extract path; today: `StoreArticle` + `ExtractSentence` / test helper `IngestText`.
 
 ---
 
 ### Phase 2: RSS Scrape (both sources) — **done**
 
 - [x] Seed `news_sources` rows (or `EnsureSource` at scrape time)
-- [x] `POST /api/scrape` both feeds; parse; call **`IngestArticle`** per item (not ad-hoc SQL)
+- [x] `POST /api/scrape` all feeds; parse; call **`StoreArticle`** per item (not ad-hoc SQL; no Cards — ADR 0006)
 - [x] Fixtures `testdata/rss/nhk_main_sample.xml`, `nhk_easy_sample.xml`
 - [x] Mockable HTTP client; timeouts; partial success JSON
 - [x] Dedupe stable via `IngestExists` (count `items_new` from Created only)

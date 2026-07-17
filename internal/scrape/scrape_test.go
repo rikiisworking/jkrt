@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rikiisworking/jkrt/internal/analyze"
 	"github.com/rikiisworking/jkrt/internal/db"
 	"github.com/rikiisworking/jkrt/internal/scrape"
 )
@@ -106,14 +105,6 @@ func fixtureClient(t *testing.T, mainURL, easyURL string) *http.Client {
 	return &http.Client{Transport: tr}
 }
 
-func mustAnalyzer(t *testing.T) *analyze.Analyzer {
-	t.Helper()
-	a, err := analyze.New()
-	if err != nil {
-		t.Fatalf("analyzer: %v", err)
-	}
-	return a
-}
 
 func sourceByName(res scrape.Result, name string) (scrape.SourceResult, bool) {
 	for _, sr := range res.Sources {
@@ -126,7 +117,6 @@ func sourceByName(res scrape.Result, name string) (scrape.SourceResult, bool) {
 
 func TestScrapeBothFixturesIngest(t *testing.T) {
 	d := openTestDB(t)
-	a := mustAnalyzer(t)
 
 	const (
 		mainURL = "https://fixture.test/nhk_main.xml"
@@ -134,7 +124,7 @@ func TestScrapeBothFixturesIngest(t *testing.T) {
 	)
 	client := fixtureClient(t, mainURL, easyURL)
 	sources := scrape.DefaultSources(mainURL, easyURL)
-	s := scrape.New(d, a, sources, client)
+	s := scrape.New(d, sources, client)
 
 	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
 	res := s.Run(context.Background(), now)
@@ -185,7 +175,7 @@ func TestScrapeBothFixturesIngest(t *testing.T) {
 		t.Fatalf("articles: got %d want 5", articles)
 	}
 
-	// Sources seeded via EnsureSource path inside IngestArticle.
+	// Sources seeded via EnsureSource path inside StoreArticle.
 	var srcCount int
 	if err := d.SQL().QueryRow(
 		`SELECT COUNT(1) FROM news_sources WHERE name IN (?, ?)`,
@@ -270,12 +260,11 @@ func TestScrapeBothFixturesIngest(t *testing.T) {
 
 func TestScrapeEasyMissingURLSoftFail(t *testing.T) {
 	d := openTestDB(t)
-	a := mustAnalyzer(t)
 
 	const mainURL = "https://fixture.test/nhk_main.xml"
 	client := fixtureClient(t, mainURL, "https://unused/")
 	sources := scrape.DefaultSources(mainURL, "") // empty easy
-	s := scrape.New(d, a, sources, client)
+	s := scrape.New(d, sources, client)
 
 	res := s.Run(context.Background(), time.Now().UTC())
 	if len(res.Sources) != len(sources) {
@@ -299,7 +288,6 @@ func TestScrapeEasyMissingURLSoftFail(t *testing.T) {
 
 func TestScrapePartialHTTPFailure(t *testing.T) {
 	d := openTestDB(t)
-	a := mustAnalyzer(t)
 
 	const (
 		mainURL = "https://fixture.test/nhk_main.xml"
@@ -308,7 +296,7 @@ func TestScrapePartialHTTPFailure(t *testing.T) {
 	// Only main is registered → easy gets 404 from transport.
 	tr := fixedTransport{mainURL: readFixture(t, "nhk_main_sample.xml")}
 	client := &http.Client{Transport: tr}
-	s := scrape.New(d, a, scrape.DefaultSources(mainURL, easyURL), client)
+	s := scrape.New(d, scrape.DefaultSources(mainURL, easyURL), client)
 
 	res := s.Run(context.Background(), time.Now().UTC())
 	main, _ := sourceByName(res, scrape.SourceNHKMain)
@@ -326,9 +314,8 @@ func TestScrapePartialHTTPFailure(t *testing.T) {
 
 func TestScrapeClientDialError(t *testing.T) {
 	d := openTestDB(t)
-	a := mustAnalyzer(t)
 	client := &http.Client{Transport: errTransport{err: errors.New("dial blocked")}}
-	s := scrape.New(d, a, []scrape.Source{{
+	s := scrape.New(d, []scrape.Source{{
 		Name:    scrape.SourceNHKMain,
 		FeedURL: "https://fixture.test/main.xml",
 	}}, client)
@@ -348,10 +335,9 @@ func TestScrapeClientDialError(t *testing.T) {
 
 func TestScrapeInvalidXMLBody(t *testing.T) {
 	d := openTestDB(t)
-	a := mustAnalyzer(t)
 	const url = "https://fixture.test/bad.xml"
 	client := &http.Client{Transport: fixedTransport{url: []byte("not-rss-at-all")}}
-	s := scrape.New(d, a, []scrape.Source{{Name: "bad", FeedURL: url}}, client)
+	s := scrape.New(d, []scrape.Source{{Name: "bad", FeedURL: url}}, client)
 
 	res := s.Run(context.Background(), time.Now().UTC())
 	if res.Sources[0].OK {
@@ -364,7 +350,6 @@ func TestScrapeInvalidXMLBody(t *testing.T) {
 
 func TestScrapeSkipsEmptyRawTextItems(t *testing.T) {
 	d := openTestDB(t)
-	a := mustAnalyzer(t)
 	// Item has guid (so it parses) but empty title/description → skip, not fail.
 	xml := `<?xml version="1.0"?><rss version="2.0"><channel>
 		<item><guid>empty-body</guid><title>  </title><description></description></item>
@@ -372,7 +357,7 @@ func TestScrapeSkipsEmptyRawTextItems(t *testing.T) {
 	</channel></rss>`
 	const url = "https://fixture.test/mixed.xml"
 	client := &http.Client{Transport: fixedTransport{url: []byte(xml)}}
-	s := scrape.New(d, a, []scrape.Source{{Name: "mixed", FeedURL: url}}, client)
+	s := scrape.New(d, []scrape.Source{{Name: "mixed", FeedURL: url}}, client)
 
 	res := s.Run(context.Background(), time.Now().UTC())
 	sr := res.Sources[0]
@@ -403,30 +388,17 @@ func TestScrapeNilDeps(t *testing.T) {
 	}
 
 	d := openTestDB(t)
-	a := mustAnalyzer(t)
 	client := &http.Client{Transport: fixedTransport{}}
 
 	// nil DB
-	s := scrape.New(nil, a, []scrape.Source{{Name: "x", FeedURL: "https://x"}}, client)
+	s := scrape.New(nil, []scrape.Source{{Name: "x", FeedURL: "https://x"}}, client)
 	res = s.Run(ctx, now)
 	if res.Sources[0].OK || !strings.Contains(res.Sources[0].Error, "database") {
 		t.Fatalf("nil db: %+v", res.Sources[0])
 	}
 
-	// nil analyzer is OK (store-only scrape; no Kagome on scrape path)
-	s = scrape.New(d, nil, []scrape.Source{{
-		Name:    "nil-ana",
-		FeedURL: "https://fixture.test/empty.xml",
-	}}, &http.Client{Transport: fixedTransport{
-		"https://fixture.test/empty.xml": []byte(`<?xml version="1.0"?><rss version="2.0"><channel></channel></rss>`),
-	}})
-	res = s.Run(ctx, now)
-	if !res.Sources[0].OK {
-		t.Fatalf("nil analyzer should store-only succeed: %+v", res.Sources[0])
-	}
-
 	// empty source name
-	s = scrape.New(d, a, []scrape.Source{{Name: "  ", FeedURL: "https://x"}}, client)
+	s = scrape.New(d, []scrape.Source{{Name: "  ", FeedURL: "https://x"}}, client)
 	res = s.Run(ctx, now)
 	if res.Sources[0].OK || !strings.Contains(res.Sources[0].Error, "name") {
 		t.Fatalf("empty name: %+v", res.Sources[0])
@@ -435,11 +407,10 @@ func TestScrapeNilDeps(t *testing.T) {
 
 func TestScrapeSetsRequestHeaders(t *testing.T) {
 	d := openTestDB(t)
-	a := mustAnalyzer(t)
 	rec := &recordingTransport{body: []byte(`<?xml version="1.0"?><rss version="2.0"><channel></channel></rss>`)}
 	client := &http.Client{Transport: rec}
 	const url = "https://fixture.test/headers.xml"
-	s := scrape.New(d, a, []scrape.Source{{Name: "hdr", FeedURL: url}}, client)
+	s := scrape.New(d, []scrape.Source{{Name: "hdr", FeedURL: url}}, client)
 
 	_ = s.Run(context.Background(), time.Now().UTC())
 	if rec.lastReq == nil {
@@ -496,7 +467,7 @@ func TestDefaultSourcesUsesDefaultMainURL(t *testing.T) {
 
 func TestNewDefaults(t *testing.T) {
 	// nil client and nil sources should not panic and should fill defaults.
-	s := scrape.New(nil, nil, nil, nil)
+	s := scrape.New(nil, nil, nil)
 	if s.Client == nil {
 		t.Fatal("expected default client")
 	}
@@ -515,7 +486,6 @@ func TestNewDefaults(t *testing.T) {
 // All built-in sources ingest offline fixtures (multi-publisher shapes).
 func TestScrapeAllDefaultSourcesFixtures(t *testing.T) {
 	d := openTestDB(t)
-	a := mustAnalyzer(t)
 
 	const (
 		mainURL = "https://fixture.test/nhk_main.xml"
@@ -530,7 +500,7 @@ func TestScrapeAllDefaultSourcesFixtures(t *testing.T) {
 	}
 	client := &http.Client{Transport: tr}
 	sources := scrape.DefaultSources(mainURL, easyURL)
-	s := scrape.New(d, a, sources, client)
+	s := scrape.New(d, sources, client)
 
 	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
 	res := s.Run(context.Background(), now)
@@ -592,11 +562,10 @@ func TestScrapeAllDefaultSourcesFixtures(t *testing.T) {
 
 func TestScrapeContextCanceledSoftFail(t *testing.T) {
 	d := openTestDB(t)
-	a := mustAnalyzer(t)
 	// Transport that blocks until the request context is done.
 	tr := &blockingTransport{}
 	client := &http.Client{Transport: tr}
-	s := scrape.New(d, a, []scrape.Source{{
+	s := scrape.New(d, []scrape.Source{{
 		Name:    "cancel_me",
 		FeedURL: "https://fixture.test/blocked.xml",
 	}}, client)

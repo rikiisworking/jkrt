@@ -1041,34 +1041,49 @@ func TestScrapeMissingDB(t *testing.T) {
 	}
 }
 
-func TestScrapeMissingAnalyzer(t *testing.T) {
+// Scrape is store-only (ADR 0006); Analyzer is not required.
+func TestScrapeOKWithoutAnalyzer(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	database, err := db.Open(dbPath, filepath.Join("..", "..", "migrations"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = database.Close() })
+	if err := auth.EnsureLearnerRow(auth.NewStore(database.SQL())); err != nil {
+		t.Fatal(err)
+	}
 	app := jkrthttp.New(jkrthttp.Options{
 		Config: config.Config{
 			AuthEnabled:   false,
 			NHKMainRSSURL: "https://fixture.test/nhk_main.xml",
+			NHKEasyRSSURL: "https://fixture.test/nhk_easy.xml",
 		},
 		DB:         database,
 		Analyzer:   nil,
 		HTTPClient: loadRSSFixtures(t),
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/scrape", nil)
-	resp, err := app.Fiber.Test(req)
+	resp, err := app.Fiber.Test(req, 60_000)
 	if err != nil {
 		t.Fatalf("Test: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("status: got %d want 500", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d want 200 body=%s", resp.StatusCode, body)
 	}
-	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "analyzer") {
-		t.Fatalf("body: %s", body)
+	var articles, cards int
+	if err := database.SQL().QueryRow(`SELECT COUNT(1) FROM articles`).Scan(&articles); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SQL().QueryRow(`SELECT COUNT(1) FROM cards`).Scan(&cards); err != nil {
+		t.Fatal(err)
+	}
+	if articles < 1 {
+		t.Fatal("expected articles after scrape without analyzer")
+	}
+	if cards != 0 {
+		t.Fatalf("scrape without analyzer must not create cards: %d", cards)
 	}
 }
 

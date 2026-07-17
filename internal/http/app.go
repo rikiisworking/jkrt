@@ -130,7 +130,7 @@ func (a *App) newScraper() *scrape.Scraper {
 		client = &http.Client{Timeout: scrape.DefaultTimeout}
 	}
 	sources := scrape.DefaultSources(a.Config.NHKMainRSSURL, a.Config.NHKEasyRSSURL)
-	return scrape.New(a.DB, a.Analyzer, sources, client)
+	return scrape.New(a.DB, sources, client)
 }
 
 // Listen starts the HTTP server.

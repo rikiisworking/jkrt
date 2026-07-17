@@ -101,21 +101,17 @@ func TestTruncateRawText(t *testing.T) {
 func TestIngestTruncatesHugeRawText(t *testing.T) {
 	d := openTestDB(t)
 	seedUser(t, d)
-	a, err := analyze.New()
-	if err != nil {
-		t.Fatal(err)
-	}
 	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
-	// Huge body with a known sentence at the start so analyze still works.
+	// Huge body: store path truncates before insert.
 	raw := "経済政策を発表した。" + strings.Repeat("あ", db.MaxRawTextRunes)
 	src := db.SourceRef{Name: "nhk_main", FeedURL: "http://example.test"}
-	res, err := d.IngestArticle(db.LearnerUserID, src, db.ArticleInput{
+	res, err := d.StoreArticle(db.LearnerUserID, src, db.ArticleInput{
 		ExternalID: "huge-1",
 		Title:      "t",
 		URL:        "http://x",
 		RawText:    raw,
 		FetchedAt:  now,
-	}, a, now)
+	}, now)
 	if err != nil {
 		t.Fatal(err)
 	}

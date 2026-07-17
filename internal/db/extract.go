@@ -35,7 +35,7 @@ type ArticleInput struct {
 	FetchedAt  time.Time
 }
 
-// IngestStatus reports Article dedupe outcome for StoreArticle / IngestArticle / IngestText.
+// IngestStatus reports Article dedupe outcome for StoreArticle / IngestText.
 type IngestStatus int
 
 const (
@@ -78,7 +78,6 @@ type execQuerier interface {
 // StoreArticle ensures the Source, then dedupes the Article by
 // (source_id, external_id). On IngestCreated it splits RawText into Sentences only.
 // Does not create Words, sentence_words, or Cards (extract-on-tap / ADR 0006).
-// Analyzer may be nil (unused).
 func (d *DB) StoreArticle(userID int64, src SourceRef, art ArticleInput, now time.Time) (IngestResult, error) {
 	if d == nil || d.sql == nil {
 		return IngestResult{}, fmt.Errorf("db is nil")
@@ -150,18 +149,10 @@ func (d *DB) StoreArticle(userID int64, src SourceRef, art ArticleInput, now tim
 	return IngestResult{ArticleID: articleID, Status: IngestCreated}, nil
 }
 
-// IngestArticle is the scrape path: store library only (Articles + Sentences).
-// Analyzer is accepted for call-site compatibility but is not used (store-only).
-// Prefer StoreArticle in new code. See ADR 0006.
-func (d *DB) IngestArticle(userID int64, src SourceRef, art ArticleInput, a *analyze.Analyzer, now time.Time) (IngestResult, error) {
-	_ = a
-	return d.StoreArticle(userID, src, art, now)
-}
-
 // IngestText is the library/manual convenience path: store text as an Article under
 // Source "manual", then extract every Sentence (creates Words/Cards).
 // Used by tests and any manual ingest that should immediately enter the queue.
-// User-facing Scrape uses StoreArticle / IngestArticle without extract.
+// User-facing Scrape uses StoreArticle only (ADR 0006).
 //
 // Not a single transaction: StoreArticle commits, then each ExtractSentence commits.
 // If extract fails mid-way, the Article/Sentences remain with a partial set extracted.

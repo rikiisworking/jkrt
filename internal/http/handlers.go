@@ -18,21 +18,16 @@ import (
 	"github.com/rikiisworking/jkrt/internal/snapshot"
 )
 
-// handleScrape runs dual NHK RSS Scrape and returns per-source JSON
-// (DEVELOPMENT_PLAN HTTP surface: POST /api/scrape).
+// handleScrape runs multi-source RSS Scrape (store Articles/Sentences only; ADR 0006)
+// and returns per-source JSON (DEVELOPMENT_PLAN HTTP surface: POST /api/scrape).
 // HTMX requests (dashboard button) get a small HTML summary fragment.
+// Analyzer is not required here — Sentence extract loads Kagome separately.
 func (a *App) handleScrape(c *fiber.Ctx) error {
 	if a.DB == nil {
 		if c.Get("HX-Request") == "true" {
 			return c.Status(fiber.StatusInternalServerError).SendString("database not configured")
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "database not configured"})
-	}
-	if a.Analyzer == nil {
-		if c.Get("HX-Request") == "true" {
-			return c.Status(fiber.StatusInternalServerError).SendString("analyzer not configured")
-		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "analyzer not configured"})
 	}
 	// Always 200 with partial-success per source (plan: 200 JSON with per-source errors).
 	result := a.newScraper().Run(c.Context(), time.Now().UTC())
