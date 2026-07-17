@@ -21,12 +21,135 @@ import (
 	"github.com/rikiisworking/jkrt/internal/config"
 	"github.com/rikiisworking/jkrt/internal/db"
 	jkrthttp "github.com/rikiisworking/jkrt/internal/http"
+	"github.com/rikiisworking/jkrt/internal/review"
+	"github.com/rikiisworking/jkrt/internal/schedule"
 	"github.com/rikiisworking/jkrt/internal/scrape"
 )
 
 func newTestApp(t *testing.T, authOn bool) *jkrthttp.App {
 	t.Helper()
 	return newTestAppOpts(t, authOn, filepath.Join("..", "..", "web", "static"), nil)
+}
+
+// http.New copies Review.Params onto DB so extract + LibraryCounts share one knobs set.
+func TestAppNewSyncsReviewParamsToDB(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sync.db")
+	database, err := db.Open(dbPath, filepath.Join("..", "..", "migrations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := auth.EnsureLearnerRow(auth.NewStore(database.SQL())); err != nil {
+		t.Fatal(err)
+	}
+	ana, err := analyze.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p := schedule.DefaultParams()
+	p.StartingEase = 1.85
+	p.ComfortableIntervalDays = 5
+	rev := review.New(database, p)
+
+	app := jkrthttp.New(jkrthttp.Options{
+		Config: config.Config{
+			Addr:        ":0",
+			AuthEnabled: false,
+			DBPath:      dbPath,
+		},
+		DB:       database,
+		Analyzer: ana,
+		Review:   rev,
+	})
+	if app.Review.Params().StartingEase != 1.85 {
+		t.Fatalf("review params: %+v", app.Review.Params())
+	}
+
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	// Ingest after New so extract sees synced schedule params.
+	if _, err := database.IngestText(db.LearnerUserID, "経済政策を発表した。", ana, now); err != nil {
+		t.Fatal(err)
+	}
+	var ease float64
+	if err := database.SQL().QueryRow(`SELECT ease FROM cards WHERE user_id = 1 LIMIT 1`).Scan(&ease); err != nil {
+		t.Fatal(err)
+	}
+	if ease != 1.85 {
+		t.Fatalf("extract ease: got %v want 1.85 (Review.Params should sync to DB)", ease)
+	}
+
+	// interval 10 ≥ threshold 5 → mature
+	_, err = database.SQL().Exec(
+		`UPDATE cards SET phase = 'review', interval_days = 10, due_at = ? WHERE user_id = 1`,
+		now.Add(24*time.Hour).Format(time.RFC3339),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lib, err := database.LibraryCounts(db.LearnerUserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lib.MatureCards < 1 {
+		t.Fatalf("mature with threshold 5: %+v", lib)
+	}
+}
+
+// Stats and export JSON must share the same snapshot.Load composition (queue + library).
+func TestStatsAndExportShareSnapshotComposition(t *testing.T) {
+	app := newTestApp(t, false)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	if _, err := app.DB.IngestText(db.LearnerUserID, "経済政策を発表した。", app.Analyzer, now); err != nil {
+		t.Fatal(err)
+	}
+	res, err := app.Review.Next(db.LearnerUserID, now)
+	if err != nil || res.Empty {
+		t.Fatal("need card")
+	}
+	if err := app.Review.Grade(db.LearnerUserID, res.Item.CardID, res.Item.SentenceID, "good", res.Item.UpdatedAt, now); err != nil {
+		t.Fatal(err)
+	}
+
+	sreq := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
+	sresp, err := app.Fiber.Test(sreq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sresp.Body.Close()
+	sbody, _ := io.ReadAll(sresp.Body)
+
+	ereq := httptest.NewRequest(http.MethodGet, "/api/export?format=json", nil)
+	eresp, err := app.Fiber.Test(ereq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eresp.Body.Close()
+	ebody, _ := io.ReadAll(eresp.Body)
+
+	var statsPayload struct {
+		Queue   review.Stats      `json:"queue"`
+		Library db.LibraryCounts  `json:"library"`
+	}
+	var exportPayload struct {
+		Queue   review.Stats     `json:"queue"`
+		Library db.LibraryCounts `json:"library"`
+	}
+	if err := json.Unmarshal(sbody, &statsPayload); err != nil {
+		t.Fatalf("stats json: %v", err)
+	}
+	if err := json.Unmarshal(ebody, &exportPayload); err != nil {
+		t.Fatalf("export json: %v", err)
+	}
+	if statsPayload.Queue.ReviewsToday != 1 || exportPayload.Queue.ReviewsToday != 1 {
+		t.Fatalf("reviews today stats=%+v export=%+v", statsPayload.Queue, exportPayload.Queue)
+	}
+	if statsPayload.Library.Cards != exportPayload.Library.Cards {
+		t.Fatalf("cards stats=%d export=%d", statsPayload.Library.Cards, exportPayload.Library.Cards)
+	}
+	if statsPayload.Queue.NewCount != exportPayload.Queue.NewCount {
+		t.Fatalf("new count stats=%d export=%d", statsPayload.Queue.NewCount, exportPayload.Queue.NewCount)
+	}
 }
 
 func newTestAppOpts(t *testing.T, authOn bool, staticDir string, httpClient scrape.HTTPDoer) *jkrthttp.App {

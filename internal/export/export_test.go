@@ -135,6 +135,49 @@ func TestExportNilService(t *testing.T) {
 	}
 }
 
+// BuildSnapshot copies queue/library from View and uses view.AsOf when now is zero.
+func TestBuildSnapshotUsesViewAndZeroNow(t *testing.T) {
+	d := openTestDB(t)
+	seedUser(t, d)
+	a, err := analyze.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 17, 15, 30, 0, 0, time.UTC)
+	if _, err := d.IngestText(db.LearnerUserID, "経済政策を発表した。", a, now); err != nil {
+		t.Fatal(err)
+	}
+	rev := review.New(d, schedule.DefaultParams())
+	view, err := snapshot.Load(rev, d, db.LearnerUserID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Mutate a copy so we prove BuildSnapshot takes View fields, not re-queries stats.
+	view.Queue.NewCount = 99
+	view.Library.Articles = 42
+
+	exp := export.New(d)
+	snap, err := exp.BuildSnapshot(db.LearnerUserID, view, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Queue.NewCount != 99 {
+		t.Fatalf("queue not from view: %+v", snap.Queue)
+	}
+	if snap.Library.Articles != 42 {
+		t.Fatalf("library not from view: %+v", snap.Library)
+	}
+	if snap.ExportedAt != view.AsOf.UTC().Format(time.RFC3339) {
+		t.Fatalf("ExportedAt: got %q want %q (from view.AsOf)", snap.ExportedAt, view.AsOf.UTC().Format(time.RFC3339))
+	}
+	if len(snap.Cards) < 1 {
+		t.Fatal("expected cards loaded from DB")
+	}
+	if snap.UserID != db.LearnerUserID {
+		t.Fatalf("user: %d", snap.UserID)
+	}
+}
+
 func openTestDB(t *testing.T) *db.DB {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "test.db")

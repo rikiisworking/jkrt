@@ -88,6 +88,65 @@ func TestLoadNilReviewStillLoadsLibrary(t *testing.T) {
 	}
 }
 
+func TestLoadNormalizesAsOfToUTC(t *testing.T) {
+	d := openTestDB(t)
+	seedUser(t, d)
+	loc := time.FixedZone("JST", 9*3600)
+	now := time.Date(2026, 7, 17, 21, 0, 0, 0, loc)
+	rev := review.New(d, schedule.DefaultParams())
+	v, err := snapshot.Load(rev, d, db.LearnerUserID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.AsOf.Location() != time.UTC {
+		t.Fatalf("AsOf location: %v", v.AsOf.Location())
+	}
+	if !v.AsOf.Equal(now.UTC()) {
+		t.Fatalf("AsOf: got %v want %v", v.AsOf, now.UTC())
+	}
+}
+
+// Load queue fields must match review.Stats (single composition source).
+func TestLoadQueueMatchesReviewStats(t *testing.T) {
+	d := openTestDB(t)
+	seedUser(t, d)
+	a, err := analyze.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	if _, err := d.IngestText(db.LearnerUserID, "経済政策を発表した。", a, now); err != nil {
+		t.Fatal(err)
+	}
+	rev := review.New(d, schedule.DefaultParams())
+	res, err := rev.Next(db.LearnerUserID, now)
+	if err != nil || res.Empty {
+		t.Fatal("need card")
+	}
+	if err := rev.Grade(db.LearnerUserID, res.Item.CardID, res.Item.SentenceID, "good", res.Item.UpdatedAt, now); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := rev.Stats(db.LearnerUserID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := snapshot.Load(rev, d, db.LearnerUserID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Queue != st {
+		t.Fatalf("queue mismatch:\n  Load:  %+v\n  Stats: %+v", v.Queue, st)
+	}
+	if v.Queue.ReviewsToday != 1 || v.Library.Reviews != 1 {
+		t.Fatalf("expected one review: queue=%+v lib=%+v", v.Queue, v.Library)
+	}
+	// After one grade out of new, queue NewCount and ByPhase["new"] should agree.
+	if v.Queue.NewCount != v.Library.ByPhase["new"] {
+		t.Fatalf("new count queue=%d phase=%d", v.Queue.NewCount, v.Library.ByPhase["new"])
+	}
+}
+
 func openTestDB(t *testing.T) *db.DB {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "t.db")
