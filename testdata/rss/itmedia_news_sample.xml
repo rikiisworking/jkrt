@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<rss version="2.0">
+  <channel>
+    <title>ITmedia NEWS fixture</title>
+    <link>https://example.test/itmedia</link>
+    <description>JKRT offline fixture — not live ITmedia</description>
+    <language>ja</language>
+    <item>
+      <title>新しい技術を発表した会社</title>
+      <link>https://example.test/itmedia/item-1</link>
+      <description>専門家が経済の見通しについて議論した。政策の詳細を説明した。</description>
+      <pubDate>Fri, 17 Jul 2026 11:44:00 +0900</pubDate>
+    </item>
+  </channel>
+</rss>

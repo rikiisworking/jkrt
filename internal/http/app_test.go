@@ -795,14 +795,25 @@ func loadRSSFixtures(t *testing.T) fixtureHTTPClient {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Empty-but-valid RSS so multi-publisher defaults succeed without live network.
-	empty := []byte(`<?xml version="1.0"?><rss version="2.0"><channel></channel></rss>`)
+	// Offline multi-publisher fixtures (same shapes as production defaults).
+	yahoo, err := os.ReadFile(filepath.Join("..", "..", "testdata", "rss", "yahoo_topics_sample.xml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	itmedia, err := os.ReadFile(filepath.Join("..", "..", "testdata", "rss", "itmedia_news_sample.xml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bbc, err := os.ReadFile(filepath.Join("..", "..", "testdata", "rss", "bbc_japanese_sample.xml"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	return fixtureHTTPClient{
 		"https://fixture.test/nhk_main.xml": main,
 		"https://fixture.test/nhk_easy.xml": easy,
-		scrape.DefaultYahooTopicsRSSURL:    empty,
-		scrape.DefaultITmediaNewsRSSURL:    empty,
-		scrape.DefaultBBCJapaneseRSSURL:    empty,
+		scrape.DefaultYahooTopicsRSSURL:    yahoo,
+		scrape.DefaultITmediaNewsRSSURL:    itmedia,
+		scrape.DefaultBBCJapaneseRSSURL:    bbc,
 	}
 }
 
@@ -1637,6 +1648,15 @@ func TestScrapeHTMXReturnsHTML(t *testing.T) {
 	}
 	if strings.HasPrefix(strings.TrimSpace(s), "{") {
 		t.Fatal("HTMX scrape must not return raw JSON")
+	}
+	// Multi-source summary should name each built-in source.
+	for _, name := range []string{
+		scrape.SourceNHKMain, scrape.SourceNHKEasy,
+		scrape.SourceYahooTopics, scrape.SourceITmediaNews, scrape.SourceBBCJapanese,
+	} {
+		if !strings.Contains(s, name) {
+			t.Fatalf("HTMX scrape summary missing %q, body=%s", name, s)
+		}
 	}
 }
 

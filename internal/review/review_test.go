@@ -536,6 +536,265 @@ func TestNewestSentenceContext(t *testing.T) {
 	}
 }
 
+// Unfamiliar highlight: focus + young review words true; mature (interval ≥ 21) false.
+func TestNextUnfamiliarHighlightMatrix(t *testing.T) {
+	d := openTestDB(t)
+	seedUser(t, d)
+	a := mustAnalyzer(t)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+
+	// One sentence with multiple kanji words so spans share context.
+	if _, err := d.IngestText(db.LearnerUserID, "経済政策を発表した。", a, now); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pick three distinct cards by lemma when present.
+	type row struct {
+		id, wordID int64
+		lemma      string
+	}
+	rows, err := d.SQL().Query(`
+		SELECT c.id, c.word_id, w.lemma FROM cards c
+		JOIN words w ON w.id = c.word_id
+		WHERE c.user_id = 1 ORDER BY c.id ASC`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cards []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.wordID, &r.lemma); err != nil {
+			t.Fatal(err)
+		}
+		cards = append(cards, r)
+	}
+	_ = rows.Close()
+	if len(cards) < 2 {
+		t.Fatalf("need ≥2 cards from fixture sentence, got %d", len(cards))
+	}
+
+	focus := cards[0]
+	// Put focus in learning (due) so Next selects it.
+	updatedAt := now.Add(-time.Hour).Format(time.RFC3339)
+	_, err = d.SQL().Exec(
+		`UPDATE cards SET phase = 'learning', due_at = ?, learning_step = 0,
+		 interval_days = 0, ease = 2.5, reps = 0, updated_at = ? WHERE id = ?`,
+		now.Add(-time.Minute).Format(time.RFC3339), updatedAt, focus.id,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// If we have a second card, make it mature review (not due, interval 21).
+	var mature *row
+	var young *row
+	if len(cards) >= 2 {
+		mature = &cards[1]
+		_, err = d.SQL().Exec(
+			`UPDATE cards SET phase = 'review', interval_days = 21, ease = 2.5,
+			 due_at = ?, reps = 3, lapses = 0, updated_at = ? WHERE id = ?`,
+			now.Add(48*time.Hour).Format(time.RFC3339), updatedAt, mature.id,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(cards) >= 3 {
+		young = &cards[2]
+		_, err = d.SQL().Exec(
+			`UPDATE cards SET phase = 'review', interval_days = 5, ease = 2.5,
+			 due_at = ?, reps = 2, lapses = 0, updated_at = ? WHERE id = ?`,
+			now.Add(24*time.Hour).Format(time.RFC3339), updatedAt, young.id,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Freeze other new cards out of the queue.
+	p := schedule.DefaultParams()
+	p.NewPerDay = 0
+	svc := review.New(d, p)
+
+	res, err := svc.Next(db.LearnerUserID, now)
+	if err != nil || res.Empty {
+		t.Fatalf("next: empty=%v err=%v", res.Empty, err)
+	}
+	if res.Item.CardID != focus.id {
+		t.Fatalf("want focus card %d, got %d lemma=%q", focus.id, res.Item.CardID, res.Item.Lemma)
+	}
+
+	byWord := map[int64]review.Span{}
+	for _, sp := range res.Item.Spans {
+		if sp.WordID != 0 {
+			byWord[sp.WordID] = sp
+		}
+	}
+	fs, ok := byWord[focus.wordID]
+	if !ok || !fs.Focus {
+		t.Fatalf("focus span missing: %+v", byWord)
+	}
+	if !fs.Unfamiliar {
+		t.Fatal("focus learning card must be unfamiliar")
+	}
+	if mature != nil {
+		ms, ok := byWord[mature.wordID]
+		if !ok {
+			t.Fatalf("mature word not in spans: word_id=%d", mature.wordID)
+		}
+		if ms.Unfamiliar {
+			t.Fatalf("mature interval=21 should not be unfamiliar: %+v", ms)
+		}
+		if ms.Focus {
+			t.Fatal("mature must not be focus")
+		}
+	}
+	if young != nil {
+		ys, ok := byWord[young.wordID]
+		if !ok {
+			t.Fatalf("young word not in spans: word_id=%d", young.wordID)
+		}
+		if !ys.Unfamiliar {
+			t.Fatalf("young review interval=5 should be unfamiliar: %+v", ys)
+		}
+		if ys.Focus {
+			t.Fatal("young must not be focus")
+		}
+	}
+}
+
+// Grade records the Sentence that was shown, even if a newer occurrence exists.
+func TestGradeKeepsShownSentence(t *testing.T) {
+	d := openTestDB(t)
+	seedUser(t, d)
+	a := mustAnalyzer(t)
+	t1 := time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 7, 17, 14, 0, 0, 0, time.UTC)
+
+	if _, err := d.IngestText(db.LearnerUserID, "経済を見る。", a, t1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.IngestText(db.LearnerUserID, "経済は重要だ。", a, t2); err != nil {
+		t.Fatal(err)
+	}
+
+	var cardID, wordID int64
+	var updatedAt string
+	err := d.SQL().QueryRow(
+		`SELECT c.id, c.word_id, c.updated_at FROM cards c
+		 JOIN words w ON w.id = c.word_id WHERE w.lemma = '経済'`,
+	).Scan(&cardID, &wordID, &updatedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Older sentence containing 経済
+	var olderSentID int64
+	err = d.SQL().QueryRow(`
+		SELECT s.id FROM sentences s
+		JOIN sentence_words sw ON sw.sentence_id = s.id
+		WHERE sw.word_id = ? AND s.text = '経済を見る。'`, wordID,
+	).Scan(&olderSentID)
+	if err != nil {
+		t.Fatalf("older sentence: %v", err)
+	}
+	var newerSentID int64
+	err = d.SQL().QueryRow(`
+		SELECT s.id FROM sentences s
+		JOIN sentence_words sw ON sw.sentence_id = s.id
+		WHERE sw.word_id = ? AND s.text = '経済は重要だ。'`, wordID,
+	).Scan(&newerSentID)
+	if err != nil {
+		t.Fatalf("newer sentence: %v", err)
+	}
+	if olderSentID == newerSentID {
+		t.Fatal("expected two distinct sentences")
+	}
+
+	// Client showed older sentence (e.g. presentation before newer ingest, or sticky UI token).
+	svc := review.New(d, schedule.DefaultParams())
+	if err := svc.Grade(db.LearnerUserID, cardID, olderSentID, "good", updatedAt, t2); err != nil {
+		t.Fatal(err)
+	}
+
+	var storedSent int64
+	var grade string
+	err = d.SQL().QueryRow(
+		`SELECT sentence_id, grade FROM reviews WHERE card_id = ?`, cardID,
+	).Scan(&storedSent, &grade)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if grade != "good" {
+		t.Fatalf("grade: %s", grade)
+	}
+	if storedSent != olderSentID {
+		t.Fatalf("reviews.sentence_id: got %d want shown older %d (newer=%d)", storedSent, olderSentID, newerSentID)
+	}
+}
+
+// Learning step 1 + Good graduates through review.Service (DB persist path of G3).
+func TestGradeLearningStep1GoodGraduates(t *testing.T) {
+	d := openTestDB(t)
+	seedUser(t, d)
+	a := mustAnalyzer(t)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	if _, err := d.IngestText(db.LearnerUserID, "経済政策を発表した。", a, now); err != nil {
+		t.Fatal(err)
+	}
+
+	var cardID, wordID int64
+	var updatedAt string
+	if err := d.SQL().QueryRow(
+		`SELECT id, word_id, updated_at FROM cards LIMIT 1`,
+	).Scan(&cardID, &wordID, &updatedAt); err != nil {
+		t.Fatal(err)
+	}
+	var sentenceID int64
+	if err := d.SQL().QueryRow(
+		`SELECT sentence_id FROM sentence_words WHERE word_id = ? LIMIT 1`, wordID,
+	).Scan(&sentenceID); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := d.SQL().Exec(
+		`UPDATE cards SET phase = 'learning', learning_step = 1, interval_days = 0,
+		 ease = 2.5, due_at = ?, reps = 0, lapses = 0, updated_at = ? WHERE id = ?`,
+		now.Format(time.RFC3339), updatedAt, cardID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	svc := review.New(d, schedule.DefaultParams())
+	if err := svc.Grade(db.LearnerUserID, cardID, sentenceID, "good", updatedAt, now); err != nil {
+		t.Fatal(err)
+	}
+
+	var phase string
+	var interval float64
+	var reps, step int
+	var dueAt string
+	err = d.SQL().QueryRow(
+		`SELECT phase, interval_days, reps, learning_step, due_at FROM cards WHERE id = ?`, cardID,
+	).Scan(&phase, &interval, &reps, &step, &dueAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if phase != "review" {
+		t.Fatalf("phase: %s want review", phase)
+	}
+	if !almostEqual(interval, 1) {
+		t.Fatalf("interval_days: %v want 1", interval)
+	}
+	if reps != 1 {
+		t.Fatalf("reps: %d want 1", reps)
+	}
+	wantDue := now.Add(24 * time.Hour).Format(time.RFC3339)
+	if dueAt != wantDue {
+		t.Fatalf("due_at: got %q want %q", dueAt, wantDue)
+	}
+}
+
 // Presentation spans reconstruct the full sentence (gaps + words).
 func TestSpansCoverFullSentence(t *testing.T) {
 	d := openTestDB(t)

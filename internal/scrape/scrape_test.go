@@ -508,3 +508,116 @@ func TestNewDefaults(t *testing.T) {
 		t.Fatalf("userID: %d", s.UserID)
 	}
 }
+
+// All built-in sources ingest offline fixtures (multi-publisher shapes).
+func TestScrapeAllDefaultSourcesFixtures(t *testing.T) {
+	d := openTestDB(t)
+	a := mustAnalyzer(t)
+
+	const (
+		mainURL = "https://fixture.test/nhk_main.xml"
+		easyURL = "https://fixture.test/nhk_easy.xml"
+	)
+	tr := fixedTransport{
+		mainURL:                          readFixture(t, "nhk_main_sample.xml"),
+		easyURL:                          readFixture(t, "nhk_easy_sample.xml"),
+		scrape.DefaultYahooTopicsRSSURL:  readFixture(t, "yahoo_topics_sample.xml"),
+		scrape.DefaultITmediaNewsRSSURL:  readFixture(t, "itmedia_news_sample.xml"),
+		scrape.DefaultBBCJapaneseRSSURL:  readFixture(t, "bbc_japanese_sample.xml"),
+	}
+	client := &http.Client{Transport: tr}
+	sources := scrape.DefaultSources(mainURL, easyURL)
+	s := scrape.New(d, a, sources, client)
+
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	res := s.Run(context.Background(), now)
+	if len(res.Sources) != len(sources) {
+		t.Fatalf("sources: %d", len(res.Sources))
+	}
+
+	wantNew := map[string]int{
+		scrape.SourceNHKMain:     2,
+		scrape.SourceNHKEasy:     3,
+		scrape.SourceYahooTopics: 2,
+		scrape.SourceITmediaNews: 1,
+		scrape.SourceBBCJapanese: 1,
+	}
+	totalNew := 0
+	for _, sr := range res.Sources {
+		if !sr.OK {
+			t.Fatalf("%s not ok: %+v", sr.Name, sr)
+		}
+		want, ok := wantNew[sr.Name]
+		if !ok {
+			t.Fatalf("unexpected source %q", sr.Name)
+		}
+		if sr.ItemsNew != want {
+			t.Fatalf("%s items_new: got %d want %d", sr.Name, sr.ItemsNew, want)
+		}
+		totalNew += sr.ItemsNew
+	}
+
+	var articles int
+	if err := d.SQL().QueryRow(`SELECT COUNT(1) FROM articles`).Scan(&articles); err != nil {
+		t.Fatal(err)
+	}
+	if articles != totalNew {
+		t.Fatalf("articles: got %d want %d", articles, totalNew)
+	}
+	var srcCount int
+	if err := d.SQL().QueryRow(`SELECT COUNT(1) FROM news_sources`).Scan(&srcCount); err != nil {
+		t.Fatal(err)
+	}
+	if srcCount != len(sources) {
+		t.Fatalf("news_sources: got %d want %d", srcCount, len(sources))
+	}
+	var words int
+	if err := d.SQL().QueryRow(`SELECT COUNT(1) FROM words`).Scan(&words); err != nil {
+		t.Fatal(err)
+	}
+	if words == 0 {
+		t.Fatal("expected words from multi-publisher ingest")
+	}
+}
+
+func TestScrapeContextCanceledSoftFail(t *testing.T) {
+	d := openTestDB(t)
+	a := mustAnalyzer(t)
+	// Transport that blocks until the request context is done.
+	tr := &blockingTransport{}
+	client := &http.Client{Transport: tr}
+	s := scrape.New(d, a, []scrape.Source{{
+		Name:    "cancel_me",
+		FeedURL: "https://fixture.test/blocked.xml",
+	}}, client)
+	s.Timeout = 50 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already canceled before Run
+	res := s.Run(ctx, time.Now().UTC())
+	if len(res.Sources) != 1 {
+		t.Fatalf("sources: %+v", res.Sources)
+	}
+	sr := res.Sources[0]
+	if sr.OK {
+		t.Fatalf("expected not ok: %+v", sr)
+	}
+	if sr.Error == "" {
+		t.Fatal("expected error message")
+	}
+	var n int
+	if err := d.SQL().QueryRow(`SELECT COUNT(1) FROM articles`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("canceled scrape must not insert articles: %d", n)
+	}
+}
+
+// blockingTransport never returns a body; waits for req.Context().Done().
+type blockingTransport struct{}
+
+func (b *blockingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	<-req.Context().Done()
+	return nil, req.Context().Err()
+}

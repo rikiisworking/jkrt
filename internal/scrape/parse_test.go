@@ -76,6 +76,56 @@ func TestParseEasyFixture(t *testing.T) {
 	}
 }
 
+// Multi-publisher fixtures mirror real feed shapes (link-only ids, CDATA, content:encoded).
+func TestParseMultiPublisherFixtures(t *testing.T) {
+	cases := []struct {
+		file      string
+		wantItems int
+		wantID0   string
+		rawSubstr string
+	}{
+		{
+			file:      "yahoo_topics_sample.xml",
+			wantItems: 2,
+			wantID0:   "https://example.test/yahoo/item-1",
+			rawSubstr: "経済政策を発表した",
+		},
+		{
+			file:      "itmedia_news_sample.xml",
+			wantItems: 1,
+			wantID0:   "https://example.test/itmedia/item-1",
+			rawSubstr: "専門家が経済の見通し",
+		},
+		{
+			file:      "bbc_japanese_sample.xml",
+			wantItems: 1,
+			wantID0:   "bbc-jp-fixture-1",
+			rawSubstr: "追加の本文がある",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.file, func(t *testing.T) {
+			data, err := os.ReadFile(fixturePath(t, tc.file))
+			if err != nil {
+				t.Fatal(err)
+			}
+			items, err := scrape.ParseRSSBytes(data)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if len(items) != tc.wantItems {
+				t.Fatalf("items: got %d want %d", len(items), tc.wantItems)
+			}
+			if items[0].ExternalID() != tc.wantID0 {
+				t.Fatalf("external_id: got %q want %q", items[0].ExternalID(), tc.wantID0)
+			}
+			if raw := items[0].RawText(); !strings.Contains(raw, tc.rawSubstr) {
+				t.Fatalf("raw_text missing %q: %q", tc.rawSubstr, raw)
+			}
+		})
+	}
+}
+
 func TestParseRSSReader(t *testing.T) {
 	// ParseRSS (io.Reader) path — used when streaming; keep covered.
 	f, err := os.Open(fixturePath(t, "nhk_easy_sample.xml"))

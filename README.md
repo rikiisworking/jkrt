@@ -12,6 +12,7 @@ Personal web app for **N2 → N1 reading**: pull **Japanese news RSS** (NHK, Yah
 | Run it locally in 5 minutes | [Quick start](#quick-start-beginner-local-only) |
 | Map of folders / packages | [Repository map](#repository-map) |
 | How data moves (scrape → review) | [How it works](#how-it-works) |
+| **How Scrape works (feeds → Cards)** | [Scrape logic](#scrape-logic) |
 | Domain words (Word, Card, …) | [Domain model](#domain-model-at-a-glance) |
 | Phone over HTTPS | [Cloudflare Tunnel](#access-from-your-phone-cloudflare-tunnel) · [full guide](docs/auth-and-tunnel.md) |
 | Scheduler math | [`docs/sm2-spec.md`](docs/sm2-spec.md) |
@@ -65,6 +66,118 @@ One **Scrape** always pulls **all** of these (partial success per feed is OK). U
 | `bbc_japanese` | `https://feeds.bbci.co.uk/japanese/rss.xml` | BBC News 日本語 |
 
 To add another feed later: append a `Source` in `internal/scrape.DefaultSources` (stable name + public RSS 2.0 URL). Still **no HTML article scrape**.
+
+### Scrape logic
+
+User-triggered only (`POST /api/scrape` or the dashboard button). There is **no background crawl**. Code: `internal/scrape` → `db.IngestArticle` → `internal/analyze` (Kagome).
+
+#### One Scrape = every source, in order
+
+```mermaid
+flowchart TB
+  U[Learner clicks Scrape<br/>POST /api/scrape]
+  L[Load DefaultSources<br/>NHK main/easy + Yahoo + ITmedia + BBC]
+  U --> L
+
+  subgraph loop [For each Source sequentially · ~15s timeout each]
+    direction TB
+    S1[scrapeOne]
+    S2[scrapeOne]
+    S3[scrapeOne …]
+  end
+
+  L --> S1 --> S2 --> S3
+  S1 --> R1[SourceResult<br/>name / ok / items_new / error?]
+  S2 --> R2[SourceResult]
+  S3 --> R3[SourceResult]
+
+  J[HTTP 200 always<br/>JSON sources array or HTMX HTML summary]
+  R1 --> J
+  R2 --> J
+  R3 --> J
+```
+
+**Partial success is normal.** If NHK Easy has no URL, or Yahoo times out, other feeds still ingest. The response lists each source’s outcome; the top-level request does not fail the whole batch.
+
+#### Per-source pipeline
+
+```mermaid
+flowchart TD
+  Start([scrapeOne]) --> Name{name empty?}
+  Name -->|yes| Err1[ok=false · error]
+  Name -->|no| URL{feed URL empty?}
+  URL -->|yes| Soft[ok=false<br/>feed URL not configured<br/>e.g. nhk_easy until env set]
+  URL -->|no| Fetch[GET feed<br/>User-Agent jkrt · Accept RSS/XML<br/>body cap 8 MiB]
+  Fetch -->|HTTP / dial / timeout| Err2[ok=false · error]
+  Fetch -->|200 body| Parse[Parse RSS 2.0<br/>skip items with no guid/link]
+  Parse -->|invalid XML| Err3[ok=false · error]
+  Parse -->|items| Each[For each item]
+
+  Each --> Raw{RawText empty?<br/>title + description<br/>+ content:encoded}
+  Raw -->|yes| Skip[Skip item<br/>do not fail source]
+  Raw -->|no| Ingest[db.IngestArticle]
+
+  Ingest --> Dedupe{UNIQUE<br/>source_id + external_id}
+  Dedupe -->|exists| Exists[IngestExists<br/>no re-analyze]
+  Dedupe -->|new| Create[IngestCreated]
+  Create --> Split[Split Sentences · 。！？]
+  Split --> Kagome[Kagome IPA analyze]
+  Kagome --> Cand[Word candidates<br/>≥1 kanji + non-empty reading]
+  Cand --> Persist[words · sentence_words · cards<br/>schedule.NewCard]
+  Exists --> NextItem[Next item]
+  Persist --> NextItem
+  Skip --> NextItem
+  NextItem --> More{more items?}
+  More -->|yes| Each
+  More -->|no| OK[ok=true · items_new = count of Created]
+
+  Err1 --> Done([SourceResult])
+  Soft --> Done
+  Err2 --> Done
+  Err3 --> Done
+  OK --> Done
+```
+
+#### What gets stored (and what does not)
+
+```mermaid
+flowchart LR
+  subgraph rss [RSS item fields only]
+    T[title]
+    D[description]
+    C[content:encoded]
+    G[guid or link → external_id]
+  end
+
+  subgraph not [Not done in v1]
+    H[HTML article page fetch]
+    GQ[goquery / full body scrape]
+    SEL[Per-feed picker UI]
+  end
+
+  T --> RT[raw_text]
+  D --> RT
+  C --> RT
+  RT --> Art[articles row]
+  G --> Art
+  Art --> Sent[sentences]
+  Sent --> Words[words + cards]
+
+  H -.->|out of scope| X[×]
+  GQ -.-> X
+  SEL -.-> X
+```
+
+| Outcome | When | Effect |
+|---------|------|--------|
+| `ok: true`, `items_new: N` | Feed fetched and parsed | `N` new articles (deduped items do not count) |
+| `ok: true`, `items_new: 0` | Feed OK but all items already known or empty text | No new Cards from that feed |
+| `ok: false`, `error: …` | Missing URL, HTTP error, bad XML, ingest failure mid-feed | That source stops; **other sources still run** |
+| Skip item (silent) | Parsed item with empty title/body | Does not fail the source |
+
+Dedupe key: **`(source_id, external_id)`** where `external_id` is RSS `guid`, else `link`. Re-scrape is safe: existing articles are not re-analyzed.
+
+Package map for this path: `internal/http` (route) → `internal/scrape` (fetch/parse loop) → `internal/db` (`IngestArticle`) → `internal/analyze` (Kagome) → SQLite.
 
 ### Runtime stack
 

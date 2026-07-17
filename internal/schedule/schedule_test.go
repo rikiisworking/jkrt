@@ -112,6 +112,10 @@ func TestG4_LearningEasyGraduates(t *testing.T) {
 	if !almostEqual(got.IntervalDays, 4) {
 		t.Fatalf("interval: got %v want 4", got.IntervalDays)
 	}
+	// Learning Easy graduates with reps += 1 (sm2-spec).
+	if got.Reps != 1 {
+		t.Fatalf("reps: got %d want 1", got.Reps)
+	}
 	wantDue := T0.Add(4 * 24 * time.Hour)
 	if !got.DueAt.Equal(wantDue) {
 		t.Fatalf("due: got %v want %v", got.DueAt, wantDue)
@@ -189,6 +193,7 @@ func TestG7_ReviewHard(t *testing.T) {
 		IntervalDays: 10,
 		Ease:         2.5,
 		DueAt:        T0,
+		Reps:         2,
 	}
 	got := schedule.Apply(p, s, schedule.GradeHard, T0)
 
@@ -200,6 +205,9 @@ func TestG7_ReviewHard(t *testing.T) {
 	}
 	if !almostEqual(got.Ease, 2.35) {
 		t.Fatalf("ease: got %v want 2.35", got.Ease)
+	}
+	if got.Reps != 3 {
+		t.Fatalf("reps: got %d want 3", got.Reps)
 	}
 	wantDue := T0.Add(12 * 24 * time.Hour)
 	if !got.DueAt.Equal(wantDue) {
@@ -216,6 +224,7 @@ func TestG8_ReviewEasy(t *testing.T) {
 		IntervalDays: 10,
 		Ease:         2.5,
 		DueAt:        T0,
+		Reps:         2,
 	}
 	got := schedule.Apply(p, s, schedule.GradeEasy, T0)
 
@@ -225,6 +234,9 @@ func TestG8_ReviewEasy(t *testing.T) {
 	// 10 * 2.5 * 1.3 = 32.5
 	if !almostEqual(got.IntervalDays, 32.5) {
 		t.Fatalf("interval: got %v want 32.5", got.IntervalDays)
+	}
+	if got.Reps != 3 {
+		t.Fatalf("reps: got %d want 3", got.Reps)
 	}
 	wantDue := T0.Add(time.Duration(32.5 * 24 * float64(time.Hour)))
 	if !got.DueAt.Equal(wantDue) {

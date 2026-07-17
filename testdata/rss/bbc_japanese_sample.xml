@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss xmlns:content="http://purl.org/rss/1.0/modules/content/" version="2.0">
+  <channel>
+    <title><![CDATA[BBC Japanese fixture]]></title>
+    <description><![CDATA[JKRT offline fixture — not live BBC]]></description>
+    <link>https://example.test/bbc-japanese</link>
+    <item>
+      <title><![CDATA[フランス議会が法案を可決した]]></title>
+      <description><![CDATA[議会は厳格な条件の下で議論を続けた。専門家が経済政策を説明した。]]></description>
+      <link>https://example.test/bbc/item-1</link>
+      <guid isPermaLink="false">bbc-jp-fixture-1</guid>
+      <pubDate>Fri, 17 Jul 2026 03:00:00 GMT</pubDate>
+      <content:encoded><![CDATA[追加の本文がある。市場は静かに反応した。]]></content:encoded>
+    </item>
+  </channel>
+</rss>

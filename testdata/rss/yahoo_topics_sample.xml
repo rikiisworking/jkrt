@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<rss version="2.0">
+  <channel>
+    <language>ja</language>
+    <title>Yahoo!ニュース・トピックス fixture</title>
+    <link>https://example.test/yahoo-topics</link>
+    <description>JKRT offline fixture — not live Yahoo</description>
+    <item>
+      <title>経済政策を発表した</title>
+      <link>https://example.test/yahoo/item-1</link>
+      <pubDate>Fri, 17 Jul 2026 02:48:47 GMT</pubDate>
+    </item>
+    <item>
+      <title>東京で会議が開かれた</title>
+      <link>https://example.test/yahoo/item-2</link>
+      <pubDate>Fri, 17 Jul 2026 03:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>
