@@ -1,0 +1,5 @@
+# .grokignore
+*.db
+*.log
+node_modules/
+dist/
