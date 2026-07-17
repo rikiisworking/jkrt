@@ -266,6 +266,66 @@ func TestExtractSentencePreservesExistingCardSchedule(t *testing.T) {
 	}
 }
 
+// First extract of a sentence whose lemmas already have Cards: candidates > 0, CardsNew == 0.
+func TestExtractSentenceNoNewCardsWhenLemmasAlreadyKnown(t *testing.T) {
+	d := openTestDB(t)
+	seedUser(t, d)
+	a, err := analyze.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	if _, err := d.IngestText(db.LearnerUserID, "経済を見る。", a, now); err != nil {
+		t.Fatal(err)
+	}
+	var cardsBefore int
+	mustCount(t, d, `SELECT COUNT(1) FROM cards`, &cardsBefore)
+	if cardsBefore < 1 {
+		t.Fatal("need cards from first sentence")
+	}
+
+	// Same lemma only (経済) — no new Card inserts; still links sentence_words.
+	store, err := d.StoreArticle(db.LearnerUserID, db.SourceRef{Name: "s2"}, db.ArticleInput{
+		ExternalID: "e2",
+		RawText:    "経済。",
+		FetchedAt:  now,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sid int64
+	if err := d.SQL().QueryRow(`SELECT id FROM sentences WHERE article_id = ?`, store.ArticleID).Scan(&sid); err != nil {
+		t.Fatal(err)
+	}
+	er, err := d.ExtractSentence(db.LearnerUserID, sid, a, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if er.AlreadyExtracted {
+		t.Fatal("first tap of this sentence is not re-extract")
+	}
+	if er.Candidates < 1 {
+		t.Fatalf("want candidates: %+v", er)
+	}
+	if er.CardsNew != 0 {
+		t.Fatalf("all lemmas already known: CardsNew=%d want 0", er.CardsNew)
+	}
+	var cardsAfter int
+	mustCount(t, d, `SELECT COUNT(1) FROM cards`, &cardsAfter)
+	if cardsAfter != cardsBefore {
+		t.Fatalf("card count grew: %d → %d", cardsBefore, cardsAfter)
+	}
+	var ext string
+	if err := d.SQL().QueryRow(`SELECT extracted_at FROM sentences WHERE id = ?`, sid).Scan(&ext); err != nil || ext == "" {
+		t.Fatalf("must mark extracted_at: %q %v", ext, err)
+	}
+	var sw int
+	mustCount(t, d, `SELECT COUNT(1) FROM sentence_words WHERE sentence_id = ?`, &sw, sid)
+	if sw < 1 {
+		t.Fatal("sentence_words should still be written")
+	}
+}
+
 func TestExtractSentenceEmptyOrKanaOnly(t *testing.T) {
 	d := openTestDB(t)
 	seedUser(t, d)

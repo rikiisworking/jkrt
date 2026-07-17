@@ -2188,6 +2188,50 @@ func TestExtractNonHTMXRedirectsToArticle(t *testing.T) {
 	}
 }
 
+// Extract when lemmas already have Cards: HTMX feedback is "Words linked", not "Added".
+func TestExtractExistingLemmasShowsWordsLinked(t *testing.T) {
+	app := newTestApp(t, false)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	if _, err := app.DB.IngestText(db.LearnerUserID, "経済を見る。", app.Analyzer, now); err != nil {
+		t.Fatal(err)
+	}
+	store, err := app.DB.StoreArticle(db.LearnerUserID, db.SourceRef{Name: "t2"}, db.ArticleInput{
+		ExternalID: "e2",
+		RawText:    "経済。", // lemma already known from IngestText above
+		FetchedAt:  now,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sid int64
+	if err := app.DB.SQL().QueryRow(`SELECT id FROM sentences WHERE article_id = ?`, store.ArticleID).Scan(&sid); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost,
+		fmt.Sprintf("/articles/%d/sentences/%d/extract", store.ArticleID, sid), nil)
+	req.Header.Set("HX-Request", "true")
+	resp, err := app.Fiber.Test(req, 60_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: %d body=%s", resp.StatusCode, b)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	if !strings.Contains(s, "Words linked") {
+		t.Fatalf("want Words linked feedback for zero new cards, body=%s", s)
+	}
+	if strings.Contains(s, "Added") {
+		t.Fatalf("must not claim new cards when CardsNew=0, body=%s", s)
+	}
+	if !strings.Contains(s, "In queue") {
+		t.Fatalf("want In queue badge, body=%s", s)
+	}
+}
+
 func TestExtractKanaOnlyShowsNoStudyWords(t *testing.T) {
 	app := newTestApp(t, false)
 	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
