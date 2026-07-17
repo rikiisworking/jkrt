@@ -287,7 +287,7 @@ func (a *App) handleSentenceExtract(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).SendString("sentence not found")
 	}
 
-	if c.Get("HX-Request") != "" {
+	if c.Get("HX-Request") == "true" {
 		c.Type("html", "utf-8")
 		return c.SendString(sentenceRowHTML(articleID, sent, res))
 	}

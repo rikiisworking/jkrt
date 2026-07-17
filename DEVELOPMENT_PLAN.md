@@ -494,7 +494,7 @@ go test ./internal/scrape/... ./... -count=1
 ```bash
 go test ./internal/schedule/... ./internal/review/... -count=1
 go test ./... -count=1
-# manual: login → scrape → /review → grade again/hard/good/easy → next card
+# manual: login → scrape → Articles → Add to review (extract) → /review → grade again/hard/good/easy → next card
 ```
 
 **Deliverable:** daily Review loop usable on phone-width browser.
@@ -597,7 +597,7 @@ go test ./... -count=1
 | 2026-07-17 | Phase 3 hardening: optimistic grade lock (`card_updated_at`), skip unpresentable Cards, HTMX `#review-main` partial + furigana sessionStorage, shared `schedule.Params` on DB extract, docs clarify UTC-day SessionLimit + NewPerDay on first grade. |
 | 2026-07-17 | Phase 3 complete: pure `internal/schedule` (NewCard/Apply/IsUnfamiliar, G1–G9), deep `internal/review` (next/grade, queue caps, newest Sentence spans), extract via `schedule.NewCard`, `GET/POST /review` HTML (4 grades, furigana toggle off by default, unfamiliar highlight). |
 | 2026-07-17 | Pre–Phase 3 architecture: pure `internal/schedule` + deep `internal/review` (next/grade); extract uses `schedule.NewCard`; ADR 0005; plan/HTTP/`sentence_id` locked. Implementation still Phase 3 checklist. |
-| 2026-07-17 | Phase 2 complete: `internal/scrape` RSS 2.0 parse + dual NHK fetch, `POST /api/scrape` (partial success JSON), fixtures under `testdata/rss/`, mock HTTP client (no network in tests), `IngestArticle` per item with `items_new` dedupe. Easy URL optional (`JKRT_NHK_EASY_RSS_URL`); soft-fail when empty. |
+| 2026-07-17 | Phase 2 complete: `internal/scrape` RSS 2.0 parse + dual NHK fetch, `POST /api/scrape` (partial success JSON), fixtures under `testdata/rss/`, mock HTTP client (no network in tests), store/ingest per item with `items_new` dedupe (today: `StoreArticle`; historical name was `IngestArticle`). Easy URL optional (`JKRT_NHK_EASY_RSS_URL`); soft-fail when empty. |
 | 2026-07-17 | Phase 1 complete: `migrations/001_init.sql`, `internal/db` (migrate + extract + unfamiliar), Kagome IPA analyze, words/sentence_words/cards on extract, fixture tests green. |
 | 2026-07-17 | Phase 0 complete: go module, Fiber, `/health`, static placeholder (Tailwind CDN + Noto Sans JP), bcrypt + HMAC session auth, acceptance curls green. |
 | 2026-07-17 | Agent-hardening: sm2-spec, HTTP table, locked pick-ones, acceptance curls, CDN rule, feed URL notes. |

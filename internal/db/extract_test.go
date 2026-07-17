@@ -1,7 +1,9 @@
 package db_test
 
 import (
+	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -494,6 +496,135 @@ func TestLibraryCountsZeroCardsAfterStoreOnly(t *testing.T) {
 	}
 	if c.Cards != 0 || c.Words != 0 {
 		t.Fatalf("store-only must not create study rows: %+v", c)
+	}
+}
+
+// ADR 0006: extract is per-sentence; siblings stay library-only until tapped.
+func TestExtractOnlySelectedSentenceLeavesSiblingsUnextracted(t *testing.T) {
+	d := openTestDB(t)
+	seedUser(t, d)
+	a, err := analyze.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	// Two sentences with distinct kanji so sibling-only lemmas stay off the deck.
+	store, err := d.StoreArticle(db.LearnerUserID, db.SourceRef{Name: "s"}, db.ArticleInput{
+		ExternalID: "multi",
+		RawText:    "経済政策を発表した。市場は反応した。",
+		FetchedAt:  now,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sid1, sid2 int64
+	if err := d.SQL().QueryRow(
+		`SELECT id FROM sentences WHERE article_id = ? ORDER BY order_index ASC LIMIT 1`,
+		store.ArticleID,
+	).Scan(&sid1); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SQL().QueryRow(
+		`SELECT id FROM sentences WHERE article_id = ? ORDER BY order_index ASC LIMIT 1 OFFSET 1`,
+		store.ArticleID,
+	).Scan(&sid2); err != nil {
+		t.Fatal(err)
+	}
+	if sid1 == 0 || sid2 == 0 || sid1 == sid2 {
+		t.Fatalf("need two sentences: %d %d", sid1, sid2)
+	}
+
+	er, err := d.ExtractSentence(db.LearnerUserID, sid1, a, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if er.AlreadyExtracted || er.Candidates < 1 || er.CardsNew < 1 {
+		t.Fatalf("first extract: %+v", er)
+	}
+
+	var ext1, ext2 sql.NullString
+	if err := d.SQL().QueryRow(`SELECT extracted_at FROM sentences WHERE id = ?`, sid1).Scan(&ext1); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SQL().QueryRow(`SELECT extracted_at FROM sentences WHERE id = ?`, sid2).Scan(&ext2); err != nil {
+		t.Fatal(err)
+	}
+	if !ext1.Valid || strings.TrimSpace(ext1.String) == "" {
+		t.Fatalf("sentence 1 must be extracted: %v", ext1)
+	}
+	if ext2.Valid && strings.TrimSpace(ext2.String) != "" {
+		t.Fatalf("sentence 2 must stay unextracted: %q", ext2.String)
+	}
+
+	var sw1, sw2 int
+	mustCount(t, d, `SELECT COUNT(1) FROM sentence_words WHERE sentence_id = ?`, &sw1, sid1)
+	mustCount(t, d, `SELECT COUNT(1) FROM sentence_words WHERE sentence_id = ?`, &sw2, sid2)
+	if sw1 < 1 {
+		t.Fatal("extracted sentence needs sentence_words")
+	}
+	if sw2 != 0 {
+		t.Fatalf("sibling sentence_words: got %d want 0", sw2)
+	}
+
+	// Browse flags: extracted + WordCount only on the tapped sentence.
+	_, sents, found, err := d.GetArticle(store.ArticleID)
+	if err != nil || !found {
+		t.Fatalf("GetArticle: found=%v err=%v", found, err)
+	}
+	if len(sents) < 2 {
+		t.Fatalf("sentences: %d", len(sents))
+	}
+	var first, second *db.SentenceListItem
+	for i := range sents {
+		switch sents[i].ID {
+		case sid1:
+			first = &sents[i]
+		case sid2:
+			second = &sents[i]
+		}
+	}
+	if first == nil || second == nil {
+		t.Fatal("missing sentence rows from GetArticle")
+	}
+	if !first.Extracted || first.WordCount < 1 {
+		t.Fatalf("extracted browse item: %+v", first)
+	}
+	if second.Extracted || second.WordCount != 0 {
+		t.Fatalf("sibling browse item must be library-only: %+v", second)
+	}
+
+	// Sibling-only surface (市場) must not have a Card until sentence 2 is extracted.
+	var marketCards int
+	if err := d.SQL().QueryRow(
+		`SELECT COUNT(1) FROM cards c
+		 JOIN words w ON w.id = c.word_id
+		 WHERE c.user_id = ? AND w.lemma = ?`,
+		db.LearnerUserID, "市場",
+	).Scan(&marketCards); err != nil {
+		t.Fatal(err)
+	}
+	if marketCards != 0 {
+		t.Fatalf("sibling lemma 市場 must not be a Card yet: %d", marketCards)
+	}
+
+	// After extracting sibling, its words enter the deck.
+	if _, err := d.ExtractSentence(db.LearnerUserID, sid2, a, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SQL().QueryRow(
+		`SELECT COUNT(1) FROM cards c
+		 JOIN words w ON w.id = c.word_id
+		 WHERE c.user_id = ? AND w.lemma = ?`,
+		db.LearnerUserID, "市場",
+	).Scan(&marketCards); err != nil {
+		t.Fatal(err)
+	}
+	if marketCards != 1 {
+		t.Fatalf("after sibling extract, 市場 cards: got %d want 1", marketCards)
+	}
+	mustCount(t, d, `SELECT COUNT(1) FROM sentence_words WHERE sentence_id = ?`, &sw2, sid2)
+	if sw2 < 1 {
+		t.Fatal("sibling should have sentence_words after extract")
 	}
 }
 

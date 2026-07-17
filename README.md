@@ -1,8 +1,9 @@
 # Japanese Kanji Reading Trainer (JKRT)
 
-Personal web app for **N2 → N1 reading**: pull **Japanese news RSS** (NHK, Yahoo topics, ITmedia, BBC Japanese, …), extract **words** (lemma + reading), and review them with **Anki-like SM-2** scheduling in real sentence context.
+Personal web app for **N2 → N1 reading**: pull **Japanese news RSS** (NHK, Yahoo topics, ITmedia, BBC Japanese, …), tap sentences to extract **words** (lemma + reading) into the deck, and review them with **Anki-like SM-2** scheduling in real sentence context.
 
 > **Status:** Phase 6 complete — stats, export, performance (v1 phases 0–6 done).  
+> **Study path:** extract-on-tap ([ADR 0006](docs/adr/0006-extract-on-tap.md)) — Scrape is library only; Cards after **Add to review**.  
 > See [`DEVELOPMENT_PLAN.md`](DEVELOPMENT_PLAN.md) and [`CONTEXT.md`](CONTEXT.md).  
 > Architecture: pure `schedule` + deep `review` ([ADR 0005](docs/adr/0005-pure-schedule-deep-review.md)).  
 > Ops: [Auth, cookies, Cloudflare Tunnel](docs/auth-and-tunnel.md) (full step-by-step).
@@ -11,8 +12,8 @@ Personal web app for **N2 → N1 reading**: pull **Japanese news RSS** (NHK, Yah
 |-----------|---------|
 | Run it locally in 5 minutes | [Quick start](#quick-start-beginner-local-only) |
 | Map of folders / packages | [Repository map](#repository-map) |
-| How data moves (scrape → review) | [How it works](#how-it-works) |
-| **How Scrape works (feeds → Cards)** | [Scrape logic](#scrape-logic) |
+| How data moves (scrape → extract → review) | [How it works](#how-it-works) |
+| **How Scrape works (feeds → library)** | [Scrape logic](#scrape-logic) |
 | Domain words (Word, Card, …) | [Domain model](#domain-model-at-a-glance) |
 | Phone over HTTPS | [Cloudflare Tunnel](#access-from-your-phone-cloudflare-tunnel) · [full guide](docs/auth-and-tunnel.md) |
 | Scheduler math | [`docs/sm2-spec.md`](docs/sm2-spec.md) |
@@ -116,17 +117,15 @@ flowchart TD
 
   Each --> Raw{RawText empty?<br/>title + description<br/>+ content:encoded}
   Raw -->|yes| Skip[Skip item<br/>do not fail source]
-  Raw -->|no| Ingest[db.StoreArticle]
+  Raw -->|no| Store[db.StoreArticle]
 
-  Ingest --> Dedupe{UNIQUE<br/>source_id + external_id}
-  Dedupe -->|exists| Exists[IngestExists<br/>no re-analyze]
+  Store --> Dedupe{UNIQUE<br/>source_id + external_id}
+  Dedupe -->|exists| Exists[IngestExists<br/>no rewrite]
   Dedupe -->|new| Create[IngestCreated]
   Create --> Split[Split Sentences · 。！？]
-  Split --> Kagome[Kagome IPA analyze]
-  Kagome --> Cand[Word candidates<br/>≥1 kanji + non-empty reading]
-  Cand --> Persist[words · sentence_words · cards<br/>schedule.NewCard]
+  Split --> Lib[articles + sentences only<br/>no Words / Cards yet]
   Exists --> NextItem[Next item]
-  Persist --> NextItem
+  Lib --> NextItem
   Skip --> NextItem
   NextItem --> More{more items?}
   More -->|yes| Each
@@ -175,12 +174,12 @@ flowchart LR
 
 | Outcome | When | Effect |
 |---------|------|--------|
-| `ok: true`, `items_new: N` | Feed fetched and parsed | `N` new articles (deduped items do not count) |
-| `ok: true`, `items_new: 0` | Feed OK but all items already known or empty text | No new Cards from that feed |
-| `ok: false`, `error: …` | Missing URL, HTTP error, bad XML, ingest failure mid-feed | That source stops; **other sources still run** |
+| `ok: true`, `items_new: N` | Feed fetched and parsed | `N` new articles (deduped items do not count); library only |
+| `ok: true`, `items_new: 0` | Feed OK but all items already known or empty text | No new library rows from that feed |
+| `ok: false`, `error: …` | Missing URL, HTTP error, bad XML, store failure mid-feed | That source stops; **other sources still run** |
 | Skip item (silent) | Parsed item with empty title/body | Does not fail the source |
 
-Dedupe key: **`(source_id, external_id)`** where `external_id` is RSS `guid`, else `link`. Re-scrape is safe: existing articles are not re-analyzed.
+Dedupe key: **`(source_id, external_id)`** where `external_id` is RSS `guid`, else `link`. Re-scrape is safe: existing articles are not rewritten.
 
 Package map for this path: `internal/http` (route) → `internal/scrape` (fetch/parse loop) → `internal/db.StoreArticle` → SQLite.  
 Study path: Articles UI → `ExtractSentence` → `internal/analyze` (Kagome) → Words/Cards.
@@ -195,6 +194,7 @@ flowchart TB
   Review[Review next/grade<br/>internal/review]
   Sched[Pure SM-2<br/>internal/schedule]
   Scrape[RSS scrape<br/>internal/scrape]
+  Extract[Sentence extract<br/>db + analyze]
   Analyze[Morphology<br/>internal/analyze]
   DB[(SQLite<br/>jkrt.db)]
 
@@ -202,10 +202,12 @@ flowchart TB
   Fiber --> Auth
   Fiber --> Review
   Fiber --> Scrape
+  Fiber --> Extract
   Review --> Sched
   Review --> DB
-  Scrape --> Analyze
   Scrape --> DB
+  Extract --> Analyze
+  Extract --> DB
   Analyze --> DB
   Auth --> DB
 ```
@@ -258,7 +260,7 @@ Full glossary: [`CONTEXT.md`](CONTEXT.md).
 
 ### Data relationships (SQLite)
 
-Tables live in `migrations/001_init.sql` (+ indexes in `002_perf.sql`).
+Tables live in `migrations/001_init.sql` (+ indexes in `002_perf.sql`, extract-on-tap in `003_sentence_extract.sql`).
 
 ```mermaid
 erDiagram
@@ -271,6 +273,9 @@ erDiagram
   cards ||--o{ reviews : "card_id"
   sentences ||--o{ reviews : "shown as context"
 
+  sentences {
+    text extracted_at
+  }
   words {
     text lemma
     text reading
@@ -355,8 +360,8 @@ jkrt/
 ## Features
 
 - [x] Local Go server with password auth (HMAC session cookie)
-- [x] Morphological analysis → kanji-bearing **Words** + Card rows
-- [x] User-triggered scrape of **all** built-in RSS feeds (NHK + others; no HTML page scrape)
+- [x] User-triggered scrape of **all** built-in RSS feeds (NHK + others; no HTML page scrape) → library only
+- [x] **Extract-on-tap**: **Add to review** on a Sentence runs Kagome → kanji-bearing **Words** + Card rows ([ADR 0006](docs/adr/0006-extract-on-tap.md))
 - [x] Review one Word at a time (Again / Hard / Good / Easy) with SM-2 scheduling
 - [x] Sentence context with unfamiliar words highlighted; furigana on toggle (default off)
 - [x] Dashboard / browse polish
@@ -468,6 +473,8 @@ make scrape
 ```
 
 Needs a live network path. NHK **Easy** soft-fails until you set `JKRT_NHK_EASY_RSS_URL`. Other built-in feeds use hardcoded public URLs (see [Built-in RSS sources](#built-in-rss-sources)).
+
+Scrape stores **Articles + Sentences only**. The review queue stays empty until you open [Articles](http://localhost:8080/articles), open an article, and tap **Add to review** on a sentence (Sentence extract).
 
 ### 6. Stop the server
 
@@ -594,16 +601,18 @@ Full detail: [`docs/auth-and-tunnel.md`](docs/auth-and-tunnel.md).
 | `GET` | `/review` | yes | Next due/new Card HTML |
 | `POST` | `/review` | yes | Grade Card → next |
 | `GET` | `/articles` | yes | Browse Articles / Sentences |
-| `POST` | `/api/scrape` | yes | All configured RSS sources (live network) |
+| `POST` | `/articles/:id/sentences/:sid/extract` | yes | Sentence extract → Words/Cards (HTMX row or redirect) |
+| `POST` | `/api/scrape` | yes | All configured RSS sources (live network; library only) |
 | `GET` | `/api/stats` | yes | Queue + library JSON |
 | `GET` | `/api/export?format=json\|csv` | yes | Snapshot / Cards CSV download |
 
 Typical session:
 
 ```text
-login → dashboard → POST scrape → GET /review → POST grade → GET /review → …
-                              ↘ GET /articles
-                              ↘ GET /api/export
+login → dashboard → POST scrape → GET /articles → open article
+                  → POST …/sentences/:sid/extract (Add to review)
+                  → GET /review → POST grade → GET /review → …
+                  ↘ GET /api/export
 ```
 
 ---
@@ -626,7 +635,7 @@ No live network in tests; RSS/analyzer fixtures live under `testdata/`.
 | `JKRT_SESSION_SECRET is required` | Auth defaults to **on**. Use `make run-dev` for local open access, or `make env` + `make run-auth`. |
 | `no user exists and JKRT_PASSWORD is not set` | Set `JKRT_PASSWORD` once to create the login user, or use `make env` and edit `.env`. |
 | Port already in use | Change `JKRT_ADDR`, e.g. `JKRT_ADDR=:8081 make run-dev`. |
-| Empty review queue | Scrape first (`make scrape` or dashboard); new cards appear after ingest. |
+| Empty review queue | Scrape builds a library only. Open **Articles**, tap **Add to review** on a sentence; Cards appear after extract. |
 | Easy feed `feed URL not configured` | Expected until `JKRT_NHK_EASY_RSS_URL` is set. |
 | Phone cannot open `localhost` | Use Cloudflare Tunnel ([guide](docs/auth-and-tunnel.md)), not the laptop’s localhost URL. |
 | Modules fail to download | Need network once; check proxy/firewall; retry `go run ./cmd/server`. |

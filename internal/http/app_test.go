@@ -2133,12 +2133,113 @@ func TestExtractWithAuthAndHTMX(t *testing.T) {
 	if eresp2.StatusCode != http.StatusOK {
 		t.Fatalf("second extract: %d", eresp2.StatusCode)
 	}
+	ebody2, _ := io.ReadAll(eresp2.Body)
+	es2 := string(ebody2)
+	if !strings.Contains(es2, "Already in review") {
+		t.Fatalf("re-extract feedback: want Already in review, body=%s", es2)
+	}
 	var cards2 int
 	if err := app.DB.SQL().QueryRow(`SELECT COUNT(1) FROM cards`).Scan(&cards2); err != nil {
 		t.Fatal(err)
 	}
 	if cards2 != cards1 {
 		t.Fatalf("cards grew on re-extract: %d → %d", cards1, cards2)
+	}
+}
+
+func TestExtractNonHTMXRedirectsToArticle(t *testing.T) {
+	app := newTestApp(t, false)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	store, err := app.DB.StoreArticle(db.LearnerUserID, db.SourceRef{Name: "t"}, db.ArticleInput{
+		ExternalID: "redir",
+		RawText:    "経済政策を発表した。",
+		FetchedAt:  now,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sid int64
+	if err := app.DB.SQL().QueryRow(`SELECT id FROM sentences WHERE article_id = ?`, store.ArticleID).Scan(&sid); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost,
+		fmt.Sprintf("/articles/%d/sentences/%d/extract", store.ArticleID, sid), nil)
+	// No HX-Request → full-page form POST
+	resp, err := app.Fiber.Test(req, 60_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d want 302 body=%s", resp.StatusCode, b)
+	}
+	wantLoc := fmt.Sprintf("/articles/%d", store.ArticleID)
+	if loc := resp.Header.Get("Location"); loc != wantLoc {
+		t.Fatalf("Location: got %q want %q", loc, wantLoc)
+	}
+	var cards int
+	if err := app.DB.SQL().QueryRow(`SELECT COUNT(1) FROM cards`).Scan(&cards); err != nil {
+		t.Fatal(err)
+	}
+	if cards < 1 {
+		t.Fatal("extract must still create cards on non-HTMX path")
+	}
+}
+
+func TestExtractKanaOnlyShowsNoStudyWords(t *testing.T) {
+	app := newTestApp(t, false)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	store, err := app.DB.StoreArticle(db.LearnerUserID, db.SourceRef{Name: "t"}, db.ArticleInput{
+		ExternalID: "kana",
+		RawText:    "あいうえお。",
+		FetchedAt:  now,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sid int64
+	if err := app.DB.SQL().QueryRow(`SELECT id FROM sentences WHERE article_id = ?`, store.ArticleID).Scan(&sid); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost,
+		fmt.Sprintf("/articles/%d/sentences/%d/extract", store.ArticleID, sid), nil)
+	req.Header.Set("HX-Request", "true")
+	resp, err := app.Fiber.Test(req, 60_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: %d body=%s", resp.StatusCode, b)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	if strings.Contains(s, "In queue") {
+		t.Fatalf("kana-only must not show In queue, body=%s", s)
+	}
+	if !strings.Contains(s, "No study words") {
+		t.Fatalf("expected No study words badge, body=%s", s)
+	}
+	if !strings.Contains(s, "No kanji words to study") {
+		t.Fatalf("expected zero-candidate feedback, body=%s", s)
+	}
+	if strings.Contains(s, "Add to review") {
+		t.Fatal("must not show Add to review after extract")
+	}
+	var cards int
+	if err := app.DB.SQL().QueryRow(`SELECT COUNT(1) FROM cards`).Scan(&cards); err != nil {
+		t.Fatal(err)
+	}
+	if cards != 0 {
+		t.Fatalf("kana-only extract must not create cards: %d", cards)
+	}
+	var ext string
+	if err := app.DB.SQL().QueryRow(`SELECT extracted_at FROM sentences WHERE id = ?`, sid).Scan(&ext); err != nil || ext == "" {
+		t.Fatalf("must mark extracted_at: %q err=%v", ext, err)
 	}
 }
 
