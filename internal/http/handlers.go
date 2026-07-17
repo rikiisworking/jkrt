@@ -3,6 +3,7 @@ package http
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -254,6 +255,60 @@ func (a *App) handleArticleDetail(c *fiber.Ctx) error {
 		return c.SendString(articleNotFoundHTML())
 	}
 	return c.SendString(articleDetailHTML(art, sents))
+}
+
+// handleSentenceExtract opts a Sentence into study (Words/Cards) — ADR 0006.
+// Non-HTMX: 302 back to article. HTMX: 200 sentence row partial.
+func (a *App) handleSentenceExtract(c *fiber.Ctx) error {
+	if a.DB == nil {
+		return c.Status(fiber.StatusInternalServerError).SendString("database not configured")
+	}
+	if a.Analyzer == nil {
+		return c.Status(fiber.StatusInternalServerError).SendString("analyzer not configured")
+	}
+	articleID, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil || articleID <= 0 {
+		return c.Status(fiber.StatusBadRequest).SendString("invalid article id")
+	}
+	sentenceID, err := strconv.ParseInt(c.Params("sid"), 10, 64)
+	if err != nil || sentenceID <= 0 {
+		return c.Status(fiber.StatusBadRequest).SendString("invalid sentence id")
+	}
+
+	now := time.Now().UTC()
+	res, err := a.DB.ExtractSentenceForArticle(db.LearnerUserID, articleID, sentenceID, a.Analyzer, now)
+	if err != nil {
+		if errors.Is(err, db.ErrSentenceNotFound) || errors.Is(err, db.ErrArticleMismatch) {
+			return c.Status(fiber.StatusNotFound).SendString("sentence not found")
+		}
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+
+	// Reload sentence for display (text + extracted state).
+	art, sents, found, err := a.DB.GetArticle(articleID)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+	if !found {
+		return c.Status(fiber.StatusNotFound).SendString("article not found")
+	}
+	var sent db.SentenceListItem
+	for _, s := range sents {
+		if s.ID == sentenceID {
+			sent = s
+			break
+		}
+	}
+	if sent.ID == 0 {
+		return c.Status(fiber.StatusNotFound).SendString("sentence not found")
+	}
+
+	if c.Get("HX-Request") != "" {
+		c.Type("html", "utf-8")
+		return c.SendString(sentenceRowHTML(articleID, sent, res))
+	}
+	_ = art
+	return c.Redirect(fmt.Sprintf("/articles/%d", articleID), fiber.StatusFound)
 }
 
 func (a *App) handleLoginGet(c *fiber.Ctx) error {

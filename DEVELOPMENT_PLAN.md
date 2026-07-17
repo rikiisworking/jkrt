@@ -3,7 +3,7 @@
 ## Overall goals
 
 - Local Mac web app (Go + Fiber) usable on iPhone via Cloudflare Tunnel (HTTPS).
-- Pipeline: user-triggered **RSS Scrape** (multi-publisher defaults) → Sentences → morphological analysis → **Word** candidates → **Card** scheduling → sentence-context Review.
+- Pipeline: user-triggered **RSS Scrape** (library only) → Articles/Sentences → learner **Sentence extract** → **Word**/Card → sentence-context Review.
 - Target: real Japanese news density from several public RSS feeds; learning goal N1-oriented **reading** of kanji-bearing words.
 - UX: minimal friction, mobile-first, blue theme, **no default furigana** (reveal on demand).
 - Single Learner. Local SQLite. User-triggered scrape only. **RSS only** (no HTML article fetch).
@@ -57,7 +57,8 @@ Full definitions: `CONTEXT.md`. Do not contradict:
 | **Unfamiliar highlight** | See locked predicate below |
 | **Queue** | Due first, then new; 20 new/day (first grade), 40 reviews/UTC day (`SessionLimit`) |
 | **Sources** | Multi-publisher RSS defaults (`DefaultSources`) |
-| **Scrape** | Always all configured; RSS fields only |
+| **Scrape** | Always all configured; RSS → Articles/Sentences only (no Cards) |
+| **Sentence extract** | Tap on Articles UI → Words/Cards (ADR 0006) |
 | **Lexicon** | Analyzer only (no gloss/JLPT seed) |
 | **Auth** | Password + signed session before public tunnel |
 | **Analyzer lib** | **Kagome** (IPA), pure-Go |
@@ -124,6 +125,7 @@ Single Learner; `users.id = 1` for v1.
 | article_id | INTEGER FK | |
 | text | TEXT | |
 | order_index | INTEGER | |
+| extracted_at | TEXT | NULL until Sentence extract; RFC3339 when opted into study (`003_sentence_extract.sql`) |
 
 **words**
 
@@ -358,7 +360,8 @@ When `JKRT_AUTH=on`, unauthenticated requests to protected routes → **401** (A
 | GET | `/review` | yes | 3 | — | `200` HTML from **next** payload (focus Word + Sentence spans) or empty state |
 | POST | `/review` | yes | 3 | form `card_id`, `grade`, `sentence_id`, **`card_updated_at`** | `302` `/review` (re-**next**) or `200` HTMX **partial** (`#review-main`); stale double-submit re-nexts; bad input → 4xx |
 | GET | `/articles` | yes | 4 | — | `200` HTML article list (newest first) or empty state |
-| GET | `/articles/:id` | yes | 4 | path id | `200` HTML Article + Sentences; missing → `404` HTML |
+| GET | `/articles/:id` | yes | 4 | path id | `200` HTML Article + Sentences (Add to review / In queue); missing → `404` HTML |
+| POST | `/articles/:id/sentences/:sid/extract` | yes | 7 | empty body | Extract sentence → Words/Cards; **HTMX** → `200` sentence row; else `302` `/articles/:id`; wrong ownership/`sid` → `404` |
 
 \*When auth off, `/` is open.
 
@@ -584,6 +587,7 @@ go test ./... -count=1
 
 | Date | Note |
 |------|------|
+| 2026-07-17 | **Extract-on-tap (ADR 0006):** Scrape = Articles/Sentences only; `ExtractSentence` + `POST /articles/:id/sentences/:sid/extract`; `sentences.extracted_at`; IngestText still store+extract-all for tests. |
 | 2026-07-17 | Multi-publisher RSS: `DefaultSources` adds `yahoo_topics`, `itmedia_news`, `bbc_japanese` (hardcoded public RSS 2.0 URLs); scrape still sequential + partial success; docs/ADR 0003/CONTEXT updated. |
 | 2026-07-17 | Architecture deepen: `snapshot.Load` composes queue+library for dashboard/stats/export; mature counts use `schedule.Params` (no forked 21); `http.New` syncs Review.Params onto DB (single boot path). |
 | 2026-07-17 | Phase 6 **complete**: `/api/stats`, `/api/export` JSON/CSV, dashboard library/export links, `002_perf.sql` indexes, raw_text truncate + export caps; export fixture tests. v1 phase plan complete. |

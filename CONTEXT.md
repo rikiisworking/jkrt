@@ -41,8 +41,12 @@ A Token that contains at least one kanji **and** has a non-empty Reading. Only W
 _Avoid_: Every token, vocabulary list item (pre-seeded lists are optional metadata, not the candidate rule)
 
 **Card**:
-The schedulable learning record for one Word (lemma + Reading) for the Learner. Holds SM-2-ish state (phase, interval, ease, due time). Created when the Word is extracted; queue caps still limit how many new Cards enter a session.
+The schedulable learning record for one Word (lemma + Reading) for the Learner. Holds SM-2-ish state (phase, interval, ease, due time). Created when a Sentence is **extracted** (learner opt-in), not on Scrape; queue caps still limit how many new Cards enter a session.
 _Avoid_: Anki note (we have no multi-field note types), character progress row, familiarity ladder (retired)
+
+**Sentence extract** (opt-in):
+Learner action on an Article’s Sentence (tap “Add to review”) that analyzes that Sentence and creates Words / occurrences / Cards for its Word candidates. Idempotent re-tap does not reset existing Card schedules. Untapped Sentences never enter the Review queue.
+_Avoid_: Grade whole Sentence, auto-extract on Scrape, soft link into a full pre-built deck
 
 **Learning phase**:
 Early Card state: short re-shows the same day (learning steps) before the Card graduates to review intervals. v1 default steps: **1 minute, then 10 minutes**.
@@ -61,7 +65,7 @@ A Word highlighted in Sentence context when its Card matches: phase is new/learn
 _Avoid_: Unknown kanji, hard character, N1 word
 
 **Review queue**:
-The ordered list of upcoming Card Reviews. Due Cards first, then new Cards, subject to **UTC-day** caps so a fresh Scrape cannot flood the learner. v1 defaults: **20 new Cards per day** (first grade introduces a new Card), **40 Reviews per UTC day** (`SessionLimit` name kept for config continuity; not an ephemeral sitting id).
+The ordered list of upcoming Card Reviews. Due Cards first, then new Cards, subject to **UTC-day** caps. Cards exist only after **Sentence extract**; a fresh Scrape alone cannot flood the queue. v1 defaults: **20 new Cards per day** (first grade introduces a new Card), **40 Reviews per UTC day** (`SessionLimit` name kept for config continuity; not an ephemeral sitting id).
 _Avoid_: All unfamiliar words at once, deck (product metaphor only — we are not Anki)
 
 **Review result** (grade):
@@ -73,8 +77,8 @@ One learner judgment on a **single Word** (its Card), shown in the context of a 
 _Avoid_: Study session (the whole sitting), quiz, sentence grade (v1 does not grade the whole Sentence)
 
 **Scrape**:
-A user-triggered fetch that **always pulls every configured Source** (built-in multi-publisher RSS list) into Articles and Sentences. RSS only — title/description/content fields from each feed item. No HTML page fetch, no goquery article scrape. No per-feed picker in v1 (partial success per source is OK).
-_Avoid_: Crawl, HTML scrape, sync, import (unless manual paste), selective single-feed scrape (v1)
+A user-triggered fetch that **always pulls every configured Source** (built-in multi-publisher RSS list) into **Articles and Sentences only** (reading library). Does **not** create Words/Cards. RSS only — title/description/content fields from each feed item. No HTML page fetch, no goquery article scrape. No per-feed picker in v1 (partial success per source is OK). Study entry is **Sentence extract** from the Articles UI.
+_Avoid_: Crawl, HTML scrape, auto Card creation, sync, import (unless manual paste), selective single-feed scrape (v1)
 
 **Learner**:
 The single person using the app (you). Access is password-gated before any public Tunnel; local dev may disable auth explicitly.

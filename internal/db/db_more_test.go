@@ -315,12 +315,16 @@ func TestIngestNilAnalyzer(t *testing.T) {
 	if _, err := d.IngestText(db.LearnerUserID, "経済", nil, now); err == nil {
 		t.Fatal("expected nil analyzer error from IngestText")
 	}
+	// Store/scrape path does not need analyzer.
 	if _, err := d.IngestArticle(db.LearnerUserID, db.SourceRef{Name: "t"}, db.ArticleInput{
 		ExternalID: "e1",
 		RawText:    "経済",
 		FetchedAt:  now,
-	}, nil, now); err == nil {
-		t.Fatal("expected nil analyzer error from IngestArticle")
+	}, nil, now); err != nil {
+		t.Fatalf("IngestArticle store-only should accept nil analyzer: %v", err)
+	}
+	if _, err := d.ExtractSentence(db.LearnerUserID, 1, nil, now); err == nil {
+		t.Fatal("expected nil analyzer error from ExtractSentence")
 	}
 }
 
@@ -560,24 +564,35 @@ func TestIngestArticleDedupe(t *testing.T) {
 		t.Fatalf("first status: got %v want Created", first.Status)
 	}
 
+	// Scrape/store path: sentences only, no words/cards until extract.
 	var wordsAfterCreate int
 	if err := d.SQL().QueryRow(`SELECT COUNT(1) FROM words`).Scan(&wordsAfterCreate); err != nil {
 		t.Fatal(err)
 	}
-	if wordsAfterCreate != 3 {
-		t.Fatalf("words after create: %d want 3", wordsAfterCreate)
+	if wordsAfterCreate != 0 {
+		t.Fatalf("words after store: %d want 0", wordsAfterCreate)
+	}
+	var cardsAfterCreate int
+	if err := d.SQL().QueryRow(`SELECT COUNT(1) FROM cards`).Scan(&cardsAfterCreate); err != nil {
+		t.Fatal(err)
+	}
+	if cardsAfterCreate != 0 {
+		t.Fatalf("cards after store: %d want 0", cardsAfterCreate)
 	}
 	var sentAfterCreate int
 	if err := d.SQL().QueryRow(`SELECT COUNT(1) FROM sentences`).Scan(&sentAfterCreate); err != nil {
 		t.Fatal(err)
 	}
+	if sentAfterCreate == 0 {
+		t.Fatal("expected sentences after store")
+	}
 
-	// Same external_id: Exists, no re-extract (word/sentence counts stable).
+	// Same external_id: Exists, no re-store (sentence counts stable).
 	second, err := d.IngestArticle(db.LearnerUserID, src, db.ArticleInput{
 		ExternalID: "guid-1",
 		Title:      "changed title ignored",
 		URL:        "http://y",
-		RawText:    "市場は反応した。", // would add more words if re-extracted
+		RawText:    "市場は反応した。", // would add sentences if re-stored
 		FetchedAt:  now.Add(time.Minute),
 	}, a, now.Add(time.Minute))
 	if err != nil {
@@ -590,13 +605,6 @@ func TestIngestArticleDedupe(t *testing.T) {
 		t.Fatalf("article id: first=%d second=%d", first.ArticleID, second.ArticleID)
 	}
 
-	var wordsAfterDedupe int
-	if err := d.SQL().QueryRow(`SELECT COUNT(1) FROM words`).Scan(&wordsAfterDedupe); err != nil {
-		t.Fatal(err)
-	}
-	if wordsAfterDedupe != wordsAfterCreate {
-		t.Fatalf("dedupe re-extracted words: %d → %d", wordsAfterCreate, wordsAfterDedupe)
-	}
 	var sentAfterDedupe int
 	if err := d.SQL().QueryRow(`SELECT COUNT(1) FROM sentences`).Scan(&sentAfterDedupe); err != nil {
 		t.Fatal(err)

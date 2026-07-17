@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
 // ArticleListItem is one row for the browse list (newest first).
@@ -29,6 +30,10 @@ type SentenceListItem struct {
 	ID         int64
 	Text       string
 	OrderIndex int
+	// Extracted is true when the learner opted this Sentence into study (extracted_at set).
+	Extracted bool
+	// ExtractedAt is RFC3339 when set; empty if not extracted.
+	ExtractedAt string
 }
 
 // DefaultArticleListLimit caps the articles browse list.
@@ -94,7 +99,7 @@ func (d *DB) GetArticle(id int64) (ArticleDetail, []SentenceListItem, bool, erro
 	}
 
 	rows, err := d.sql.Query(`
-		SELECT id, text, order_index
+		SELECT id, text, order_index, extracted_at
 		FROM sentences
 		WHERE article_id = ?
 		ORDER BY order_index ASC, id ASC`, id)
@@ -106,8 +111,13 @@ func (d *DB) GetArticle(id int64) (ArticleDetail, []SentenceListItem, bool, erro
 	var sents []SentenceListItem
 	for rows.Next() {
 		var s SentenceListItem
-		if err := rows.Scan(&s.ID, &s.Text, &s.OrderIndex); err != nil {
+		var ext sql.NullString
+		if err := rows.Scan(&s.ID, &s.Text, &s.OrderIndex, &ext); err != nil {
 			return ArticleDetail{}, nil, false, fmt.Errorf("scan sentence: %w", err)
+		}
+		if ext.Valid && strings.TrimSpace(ext.String) != "" {
+			s.Extracted = true
+			s.ExtractedAt = ext.String
 		}
 		sents = append(sents, s)
 	}

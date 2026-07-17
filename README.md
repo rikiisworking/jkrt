@@ -24,7 +24,7 @@ Personal web app for **N2 → N1 reading**: pull **Japanese news RSS** (NHK, Yah
 
 ### Learning loop (end-to-end)
 
-You do **not** grade whole articles or single kanji. The app scrapes news RSS, splits text into **Sentences**, finds kanji-bearing **Words** (lemma + reading), creates a **Card** per Word, then you grade **one Card at a time** in sentence context.
+You do **not** grade whole articles or single kanji. **Scrape** builds a reading library only. You open **Articles**, tap **Add to review** on a sentence (extract), then grade **one Word/Card at a time**.
 
 ```mermaid
 flowchart LR
@@ -37,7 +37,8 @@ flowchart LR
   end
 
   S[Scrape<br/>user /api/scrape]
-  A[Articles + Sentences]
+  A[Articles + Sentences<br/>no Cards yet]
+  T[Tap sentence<br/>Add to review]
   K[Kagome analyze]
   W[Words + Cards]
   Q[Review queue<br/>due then new]
@@ -49,7 +50,7 @@ flowchart LR
   Y --> S
   I --> S
   B --> S
-  S --> A --> K --> W --> Q --> R --> SM
+  S --> A --> T --> K --> W --> Q --> R --> SM
   SM --> Q
 ```
 
@@ -153,6 +154,7 @@ flowchart LR
     H[HTML article page fetch]
     GQ[goquery / full body scrape]
     SEL[Per-feed picker UI]
+    AUTO[Auto Cards on scrape]
   end
 
   T --> RT[raw_text]
@@ -160,13 +162,16 @@ flowchart LR
   C --> RT
   RT --> Art[articles row]
   G --> Art
-  Art --> Sent[sentences]
-  Sent --> Words[words + cards]
+  Art --> Sent[sentences only]
+  Sent -.->|tap Add to review| Words[words + cards]
 
   H -.->|out of scope| X[×]
   GQ -.-> X
   SEL -.-> X
+  AUTO -.-> X
 ```
+
+**Study opt-in:** `POST /articles/:id/sentences/:sid/extract` (or the button on the article page). Sets `sentences.extracted_at` and creates Cards. Re-tap is safe (no schedule reset). See [ADR 0006](docs/adr/0006-extract-on-tap.md).
 
 | Outcome | When | Effect |
 |---------|------|--------|

@@ -229,22 +229,20 @@ func TestScrapeBothFixturesIngest(t *testing.T) {
 		t.Fatal("expected sentences after scrape")
 	}
 
+	// Extract-on-tap: scrape stores library only — no words/cards until learner extracts.
 	var words int
 	if err := d.SQL().QueryRow(`SELECT COUNT(1) FROM words`).Scan(&words); err != nil {
 		t.Fatal(err)
 	}
-	if words == 0 {
-		t.Fatal("expected words from analyzer")
+	if words != 0 {
+		t.Fatalf("scrape must not create words: %d", words)
 	}
 	var cards int
 	if err := d.SQL().QueryRow(`SELECT COUNT(1) FROM cards WHERE user_id = 1`).Scan(&cards); err != nil {
 		t.Fatal(err)
 	}
-	if cards == 0 {
-		t.Fatal("expected cards on extract")
-	}
-	if cards != words {
-		t.Fatalf("cards %d != words %d", cards, words)
+	if cards != 0 {
+		t.Fatalf("scrape must not create cards: %d", cards)
 	}
 
 	// Second run: NHK fixtures dedupe → items_new = 0; extras still soft-fail without fixtures.
@@ -575,8 +573,15 @@ func TestScrapeAllDefaultSourcesFixtures(t *testing.T) {
 	if err := d.SQL().QueryRow(`SELECT COUNT(1) FROM words`).Scan(&words); err != nil {
 		t.Fatal(err)
 	}
-	if words == 0 {
-		t.Fatal("expected words from multi-publisher ingest")
+	if words != 0 {
+		t.Fatalf("multi-source scrape must not create words: %d", words)
+	}
+	var cards int
+	if err := d.SQL().QueryRow(`SELECT COUNT(1) FROM cards`).Scan(&cards); err != nil {
+		t.Fatal(err)
+	}
+	if cards != 0 {
+		t.Fatalf("multi-source scrape must not create cards: %d", cards)
 	}
 }
 
