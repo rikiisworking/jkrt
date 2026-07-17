@@ -31,6 +31,27 @@ func TestStatsEmpty(t *testing.T) {
 	}
 }
 
+func TestStatsZeroNewAfterStoreOnly(t *testing.T) {
+	d := openTestDB(t)
+	seedUser(t, d)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	if _, err := d.StoreArticle(db.LearnerUserID, db.SourceRef{Name: "s"}, db.ArticleInput{
+		ExternalID: "e",
+		RawText:    "経済政策を発表した。",
+		FetchedAt:  now,
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	svc := review.New(d, schedule.DefaultParams())
+	st, err := svc.Stats(db.LearnerUserID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.NewCount != 0 || st.DueCount != 0 {
+		t.Fatalf("store-only must not fill queue stats: %+v", st)
+	}
+}
+
 func TestStatsAfterIngestAndGrade(t *testing.T) {
 	d := openTestDB(t)
 	seedUser(t, d)

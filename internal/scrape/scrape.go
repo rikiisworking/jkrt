@@ -1,4 +1,5 @@
-// Package scrape fetches configured RSS feeds and ingests Articles via db.IngestArticle.
+// Package scrape fetches configured RSS feeds and stores Articles/Sentences via db.StoreArticle.
+// Store-only (ADR 0006): no morphological analysis and no Cards on Scrape.
 package scrape
 
 import (
@@ -10,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rikiisworking/jkrt/internal/analyze"
 	"github.com/rikiisworking/jkrt/internal/db"
 )
 
@@ -63,14 +63,14 @@ type Result struct {
 	Sources []SourceResult `json:"sources"`
 }
 
-// Scraper fetches every configured Source and calls IngestArticle per item.
+// Scraper fetches every configured Source and stores Articles/Sentences only
+// (extract-on-tap / ADR 0006). Analysis and Cards happen later via Sentence extract.
 type Scraper struct {
-	Client   HTTPDoer
-	DB       *db.DB
-	Analyzer *analyze.Analyzer
-	Sources  []Source
-	Timeout  time.Duration // request context timeout per feed when Client has no timeout
-	UserID   int64
+	Client  HTTPDoer
+	DB      *db.DB
+	Sources []Source
+	Timeout time.Duration // request context timeout per feed when Client has no timeout
+	UserID  int64
 }
 
 // DefaultSources returns the built-in multi-publisher RSS list.
@@ -111,7 +111,7 @@ func DefaultSources(mainURL, easyURL string) []Source {
 }
 
 // New builds a Scraper with defaults. client may be nil (*http.Client with DefaultTimeout).
-func New(database *db.DB, ana *analyze.Analyzer, sources []Source, client HTTPDoer) *Scraper {
+func New(database *db.DB, sources []Source, client HTTPDoer) *Scraper {
 	if client == nil {
 		client = &http.Client{Timeout: DefaultTimeout}
 	}
@@ -119,12 +119,11 @@ func New(database *db.DB, ana *analyze.Analyzer, sources []Source, client HTTPDo
 		sources = DefaultSources(DefaultMainRSSURL, "")
 	}
 	return &Scraper{
-		Client:   client,
-		DB:       database,
-		Analyzer: ana,
-		Sources:  sources,
-		Timeout:  DefaultTimeout,
-		UserID:   db.LearnerUserID,
+		Client:  client,
+		DB:      database,
+		Sources: sources,
+		Timeout: DefaultTimeout,
+		UserID:  db.LearnerUserID,
 	}
 }
 
@@ -165,10 +164,6 @@ func (s *Scraper) scrapeOne(ctx context.Context, userID int64, src Source, now t
 		res.Error = "database is nil"
 		return res
 	}
-	if s.Analyzer == nil {
-		res.Error = "analyzer is nil"
-		return res
-	}
 	if s.Client == nil {
 		res.Error = "http client is nil"
 		return res
@@ -195,13 +190,13 @@ func (s *Scraper) scrapeOne(ctx context.Context, userID int64, src Source, now t
 			// Nothing useful to store; skip without failing the source.
 			continue
 		}
-		ing, err := s.DB.IngestArticle(userID, srcRef, db.ArticleInput{
+		ing, err := s.DB.StoreArticle(userID, srcRef, db.ArticleInput{
 			ExternalID: extID,
 			Title:      it.Title,
 			URL:        it.Link,
 			RawText:    raw,
 			FetchedAt:  now,
-		}, s.Analyzer, now)
+		}, now)
 		if err != nil {
 			res.Error = fmt.Sprintf("ingest %s: %v", extID, err)
 			res.ItemsNew = newCount

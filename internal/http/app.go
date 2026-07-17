@@ -120,6 +120,7 @@ func (a *App) routes() {
 	protected.Post("/review", a.handleReviewPost)
 	protected.Get("/articles", a.handleArticlesList)
 	protected.Get("/articles/:id", a.handleArticleDetail)
+	protected.Post("/articles/:id/sentences/:sid/extract", a.handleSentenceExtract)
 }
 
 // newScraper builds a Scraper from app deps (all DefaultSources; scrape is always multi-feed).
@@ -129,15 +130,10 @@ func (a *App) newScraper() *scrape.Scraper {
 		client = &http.Client{Timeout: scrape.DefaultTimeout}
 	}
 	sources := scrape.DefaultSources(a.Config.NHKMainRSSURL, a.Config.NHKEasyRSSURL)
-	return scrape.New(a.DB, a.Analyzer, sources, client)
+	return scrape.New(a.DB, sources, client)
 }
 
 // Listen starts the HTTP server.
 func (a *App) Listen() error {
 	return a.Fiber.Listen(a.Config.Addr)
-}
-
-// Shutdown gracefully shuts down the server.
-func (a *App) Shutdown() error {
-	return a.Fiber.Shutdown()
 }

@@ -3,7 +3,7 @@
 ## Overall goals
 
 - Local Mac web app (Go + Fiber) usable on iPhone via Cloudflare Tunnel (HTTPS).
-- Pipeline: user-triggered **RSS Scrape** (multi-publisher defaults) → Sentences → morphological analysis → **Word** candidates → **Card** scheduling → sentence-context Review.
+- Pipeline: user-triggered **RSS Scrape** (library only) → Articles/Sentences → learner **Sentence extract** → **Word**/Card → sentence-context Review.
 - Target: real Japanese news density from several public RSS feeds; learning goal N1-oriented **reading** of kanji-bearing words.
 - UX: minimal friction, mobile-first, blue theme, **no default furigana** (reveal on demand).
 - Single Learner. Local SQLite. User-triggered scrape only. **RSS only** (no HTML article fetch).
@@ -57,7 +57,8 @@ Full definitions: `CONTEXT.md`. Do not contradict:
 | **Unfamiliar highlight** | See locked predicate below |
 | **Queue** | Due first, then new; 20 new/day (first grade), 40 reviews/UTC day (`SessionLimit`) |
 | **Sources** | Multi-publisher RSS defaults (`DefaultSources`) |
-| **Scrape** | Always all configured; RSS fields only |
+| **Scrape** | Always all configured; RSS → Articles/Sentences only (no Cards) |
+| **Sentence extract** | Tap on Articles UI → Words/Cards (ADR 0006) |
 | **Lexicon** | Analyzer only (no gloss/JLPT seed) |
 | **Auth** | Password + signed session before public tunnel |
 | **Analyzer lib** | **Kagome** (IPA), pure-Go |
@@ -124,6 +125,7 @@ Single Learner; `users.id = 1` for v1.
 | article_id | INTEGER FK | |
 | text | TEXT | |
 | order_index | INTEGER | |
+| extracted_at | TEXT | NULL until Sentence extract; RFC3339 when opted into study (`003_sentence_extract.sql`) |
 
 **words**
 
@@ -187,7 +189,7 @@ Migrations: `migrations/001_init.sql`, applied on startup.
 
 - **No I/O.** Golden tests G1–G9 from the spec.
 - **`Params` / `DefaultParams()`** — all normative knobs (learning steps, ease, intervals, `NewPerDay`, `SessionLimit`, …). v1: construct review with `DefaultParams()`; env overrides (`JKRT_NEW_PER_DAY`, etc.) optional later without changing next/grade.
-- **`NewCard(params, now) → state`** — seed fields for extract (`phase=new`, ease, `due_at=now`, …). **`db.IngestArticle` must use this** — do not re-fork defaults in SQL.
+- **`NewCard(params, now) → state`** — seed fields for Sentence extract (`phase=new`, ease, `due_at=now`, …). **`db.ExtractSentence` / `persistCandidatesTx` must use this** (not Scrape/`StoreArticle`) — do not re-fork defaults in SQL.
 - **`Apply(params, state, grade, now) → state`** — single pure transition; id-free card state (phase, learning_step, interval_days, ease, due_at, reps, lapses).
 - **`IsUnfamiliar(state, now) bool`** — locked highlight predicate (spec). Lives here, not in `db`.
 
@@ -210,7 +212,7 @@ Small external interface (HTTP + tests cross the same seam):
 
 ### `internal/db` (ingest unchanged shape)
 
-- Keep deep **`IngestArticle`** — do not split into shallow services.
+- Keep deep **`StoreArticle`** + **`ExtractSentence`** (ADR 0006) — do not re-fork Card defaults outside `schedule.NewCard`.
 - New Card rows: persist **`schedule.NewCard`** output. Remove package-local forked ease/unfamiliar once schedule exists.
 
 ---
@@ -358,7 +360,8 @@ When `JKRT_AUTH=on`, unauthenticated requests to protected routes → **401** (A
 | GET | `/review` | yes | 3 | — | `200` HTML from **next** payload (focus Word + Sentence spans) or empty state |
 | POST | `/review` | yes | 3 | form `card_id`, `grade`, `sentence_id`, **`card_updated_at`** | `302` `/review` (re-**next**) or `200` HTMX **partial** (`#review-main`); stale double-submit re-nexts; bad input → 4xx |
 | GET | `/articles` | yes | 4 | — | `200` HTML article list (newest first) or empty state |
-| GET | `/articles/:id` | yes | 4 | path id | `200` HTML Article + Sentences; missing → `404` HTML |
+| GET | `/articles/:id` | yes | 4 | path id | `200` HTML Article + Sentences (Add to review / In queue); missing → `404` HTML |
+| POST | `/articles/:id/sentences/:sid/extract` | yes | ADR 0006 | empty body | Extract sentence → Words/Cards; **HTMX** → `200` sentence row; else `302` `/articles/:id`; wrong ownership/`sid` → `404` |
 
 \*When auth off, `/` is open.
 
@@ -430,12 +433,12 @@ curl -sS -b /tmp/jkrt-cj -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8080/
 - [x] Empty reading skipped
 - [x] No live RSS (string/fixture analyze only)
 - [x] Deep Article ingest interface (pre–Phase 2):
-  - `db.IngestArticle` — Source + Article → Sentences → Words/Cards; returns `IngestCreated` \| `IngestExists`
+  - `db.StoreArticle` — Source + Article → Sentences only; returns `IngestCreated` \| `IngestExists` (Words/Cards via `ExtractSentence`, ADR 0006)
   - `db.IngestText` — library/manual path (unique external_id; always Created)
   - Dedupe on `(source_id, external_id)`: Exists skips re-extract (no analyze)
   - Single SQL path via shared querier helpers (no public/tx twin pairs)
 
-**Tests:** analyze fixture sentence; UNIQUE(lemma, reading); skip empty reading; card row on extract; IngestArticle dedupe.
+**Tests:** analyze fixture sentence; UNIQUE(lemma, reading); skip empty reading; card row on extract; StoreArticle dedupe.
 
 **Acceptance:**
 
@@ -444,14 +447,14 @@ go test ./internal/analyze/... ./internal/db/... -count=1
 # all pass; includes Japanese fixture 経済政策を発表した。
 ```
 
-**Deliverable:** `IngestText` / `IngestArticle` → sentences → words/cards in SQLite.
+**Deliverable (historical Phase 1):** library ingest + extract path; today: `StoreArticle` + `ExtractSentence` / test helper `IngestText`.
 
 ---
 
 ### Phase 2: RSS Scrape (both sources) — **done**
 
 - [x] Seed `news_sources` rows (or `EnsureSource` at scrape time)
-- [x] `POST /api/scrape` both feeds; parse; call **`IngestArticle`** per item (not ad-hoc SQL)
+- [x] `POST /api/scrape` all feeds; parse; call **`StoreArticle`** per item (not ad-hoc SQL; no Cards — ADR 0006)
 - [x] Fixtures `testdata/rss/nhk_main_sample.xml`, `nhk_easy_sample.xml`
 - [x] Mockable HTTP client; timeouts; partial success JSON
 - [x] Dedupe stable via `IngestExists` (count `items_new` from Created only)
@@ -491,7 +494,7 @@ go test ./internal/scrape/... ./... -count=1
 ```bash
 go test ./internal/schedule/... ./internal/review/... -count=1
 go test ./... -count=1
-# manual: login → scrape → /review → grade again/hard/good/easy → next card
+# manual: login → scrape → Articles → Add to review (extract) → /review → grade again/hard/good/easy → next card
 ```
 
 **Deliverable:** daily Review loop usable on phone-width browser.
@@ -584,6 +587,7 @@ go test ./... -count=1
 
 | Date | Note |
 |------|------|
+| 2026-07-17 | **Extract-on-tap (ADR 0006):** Scrape = Articles/Sentences only; `ExtractSentence` + `POST /articles/:id/sentences/:sid/extract`; `sentences.extracted_at`; IngestText still store+extract-all for tests. |
 | 2026-07-17 | Multi-publisher RSS: `DefaultSources` adds `yahoo_topics`, `itmedia_news`, `bbc_japanese` (hardcoded public RSS 2.0 URLs); scrape still sequential + partial success; docs/ADR 0003/CONTEXT updated. |
 | 2026-07-17 | Architecture deepen: `snapshot.Load` composes queue+library for dashboard/stats/export; mature counts use `schedule.Params` (no forked 21); `http.New` syncs Review.Params onto DB (single boot path). |
 | 2026-07-17 | Phase 6 **complete**: `/api/stats`, `/api/export` JSON/CSV, dashboard library/export links, `002_perf.sql` indexes, raw_text truncate + export caps; export fixture tests. v1 phase plan complete. |
@@ -593,7 +597,7 @@ go test ./... -count=1
 | 2026-07-17 | Phase 3 hardening: optimistic grade lock (`card_updated_at`), skip unpresentable Cards, HTMX `#review-main` partial + furigana sessionStorage, shared `schedule.Params` on DB extract, docs clarify UTC-day SessionLimit + NewPerDay on first grade. |
 | 2026-07-17 | Phase 3 complete: pure `internal/schedule` (NewCard/Apply/IsUnfamiliar, G1–G9), deep `internal/review` (next/grade, queue caps, newest Sentence spans), extract via `schedule.NewCard`, `GET/POST /review` HTML (4 grades, furigana toggle off by default, unfamiliar highlight). |
 | 2026-07-17 | Pre–Phase 3 architecture: pure `internal/schedule` + deep `internal/review` (next/grade); extract uses `schedule.NewCard`; ADR 0005; plan/HTTP/`sentence_id` locked. Implementation still Phase 3 checklist. |
-| 2026-07-17 | Phase 2 complete: `internal/scrape` RSS 2.0 parse + dual NHK fetch, `POST /api/scrape` (partial success JSON), fixtures under `testdata/rss/`, mock HTTP client (no network in tests), `IngestArticle` per item with `items_new` dedupe. Easy URL optional (`JKRT_NHK_EASY_RSS_URL`); soft-fail when empty. |
+| 2026-07-17 | Phase 2 complete: `internal/scrape` RSS 2.0 parse + dual NHK fetch, `POST /api/scrape` (partial success JSON), fixtures under `testdata/rss/`, mock HTTP client (no network in tests), store/ingest per item with `items_new` dedupe (today: `StoreArticle`; historical name was `IngestArticle`). Easy URL optional (`JKRT_NHK_EASY_RSS_URL`); soft-fail when empty. |
 | 2026-07-17 | Phase 1 complete: `migrations/001_init.sql`, `internal/db` (migrate + extract + unfamiliar), Kagome IPA analyze, words/sentence_words/cards on extract, fixture tests green. |
 | 2026-07-17 | Phase 0 complete: go module, Fiber, `/health`, static placeholder (Tailwind CDN + Noto Sans JP), bcrypt + HMAC session auth, acceptance curls green. |
 | 2026-07-17 | Agent-hardening: sm2-spec, HTTP table, locked pick-ones, acceptance curls, CDN rule, feed URL notes. |

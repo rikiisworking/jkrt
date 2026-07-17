@@ -233,7 +233,7 @@ func dashboardEmptyHint(d DashboardData) string {
 	return `
       <div class="mt-6 rounded-xl border border-dashed border-slate-300 bg-white/60 p-5 text-center">
         <p class="text-sm font-medium text-slate-700">No articles yet</p>
-        <p class="mt-1 text-xs text-slate-500">Tap <strong>Scrape NHK</strong> to pull main + Easy RSS into the library.</p>
+        <p class="mt-1 text-xs text-slate-500">Tap <strong>Scrape NHK</strong> to pull RSS into the library, then open <strong>Articles</strong> and add sentences to review.</p>
       </div>`
 }
 
@@ -335,7 +335,8 @@ func articleDetailHTML(art db.ArticleDetail, sents []db.SentenceListItem) string
       <p class="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-500">
         <span>%s</span>
         <span>%s</span>
-      </p>`,
+      </p>
+      <p class="mt-3 text-sm text-slate-600">Tap <strong>Add to review</strong> on a sentence to create Cards for its kanji words. Scrape alone does not fill the queue.</p>`,
 		html.EscapeString(title),
 		html.EscapeString(art.SourceName),
 		html.EscapeString(formatFetchedDisplay(art.FetchedAt)),
@@ -355,19 +356,75 @@ func articleDetailHTML(art db.ArticleDetail, sents []db.SentenceListItem) string
       </div>`)
 	} else {
 		body.WriteString(`<ol class="mt-6 space-y-3 list-none">`)
-		for i, s := range sents {
-			body.WriteString(fmt.Sprintf(`
-      <li class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-        <p class="text-xs text-slate-400">Sentence %d</p>
-        <p class="mt-1 text-base leading-relaxed text-slate-900" lang="ja">%s</p>
-      </li>`,
-				i+1,
-				html.EscapeString(s.Text),
-			))
+		for _, s := range sents {
+			body.WriteString(sentenceRowHTML(art.ID, s, db.ExtractResult{}))
 		}
 		body.WriteString(`</ol>`)
 	}
 	return pageShell(title+" — JKRT", "articles", "", body.String())
+}
+
+// sentenceRowHTML is one sentence list item (full page or HTMX partial after extract).
+func sentenceRowHTML(articleID int64, s db.SentenceListItem, last db.ExtractResult) string {
+	idAttr := fmt.Sprintf("sentence-%d", s.ID)
+	meta := ""
+	if last.SentenceID == s.ID {
+		if last.Candidates == 0 {
+			meta = `<p class="mt-1 text-xs text-slate-500">No kanji words to study in this sentence.</p>`
+		} else if last.AlreadyExtracted && last.CardsNew == 0 {
+			meta = `<p class="mt-1 text-xs text-slate-500">Already in review.</p>`
+		} else if last.CardsNew > 0 {
+			meta = fmt.Sprintf(`<p class="mt-1 text-xs text-emerald-600">Added %d new card(s).</p>`, last.CardsNew)
+		} else {
+			meta = `<p class="mt-1 text-xs text-emerald-600">Words linked to review.</p>`
+		}
+	}
+
+	if s.Extracted {
+		// "In queue" only when Words/Cards were linked; zero-candidate extracts are marked only.
+		inQueue := s.WordCount > 0 || (last.SentenceID == s.ID && last.Candidates > 0)
+		badge := `<span class="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">No study words</span>`
+		if inQueue {
+			badge = `<span class="rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">In queue</span>`
+		}
+		return fmt.Sprintf(`
+      <li id="%s" class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div class="flex flex-wrap items-start justify-between gap-2">
+          <p class="text-xs text-slate-400">Sentence</p>
+          %s
+        </div>
+        <p class="mt-1 text-base leading-relaxed text-slate-900" lang="ja">%s</p>
+        %s
+      </li>`,
+			idAttr,
+			badge,
+			html.EscapeString(s.Text),
+			meta,
+		)
+	}
+
+	return fmt.Sprintf(`
+      <li id="%s" class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+        <p class="text-xs text-slate-400">Sentence</p>
+        <p class="mt-1 text-base leading-relaxed text-slate-900" lang="ja">%s</p>
+        %s
+        <form method="post" action="/articles/%d/sentences/%d/extract"
+          hx-post="/articles/%d/sentences/%d/extract"
+          hx-target="#%s" hx-swap="outerHTML"
+          class="mt-3">
+          <button type="submit"
+            class="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-white shadow hover:bg-blue-600 active:scale-[0.98]">
+            Add to review
+          </button>
+        </form>
+      </li>`,
+		idAttr,
+		html.EscapeString(s.Text),
+		meta,
+		articleID, s.ID,
+		articleID, s.ID,
+		idAttr,
+	)
 }
 
 func articleNotFoundHTML() string {
@@ -434,7 +491,7 @@ func reviewEmptyHTML() string {
 func reviewEmptyPartial() string {
 	return `      <div class="mt-6 rounded-xl border border-slate-200 bg-white p-8 text-center shadow-sm">
         <p class="text-lg font-medium text-slate-800">Queue empty</p>
-        <p class="mt-2 text-sm text-slate-500">No due or new Cards right now. Scrape news, then come back.</p>
+        <p class="mt-2 text-sm text-slate-500">No due or new Cards. Scrape news if needed, then open <strong>Articles</strong> and tap <strong>Add to review</strong> on a sentence.</p>
         <div class="mt-6 flex flex-wrap justify-center gap-3">
           <a href="/" class="inline-block rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white hover:bg-blue-600">Home</a>
           <a href="/articles" class="inline-block rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100">Articles</a>

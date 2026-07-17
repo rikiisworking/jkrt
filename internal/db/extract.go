@@ -35,21 +35,38 @@ type ArticleInput struct {
 	FetchedAt  time.Time
 }
 
-// IngestStatus reports Article dedupe outcome for IngestArticle / IngestText.
+// IngestStatus reports Article dedupe outcome for StoreArticle / IngestText.
 type IngestStatus int
 
 const (
-	// IngestCreated: new Article row; Sentences, Words, and Cards written.
+	// IngestCreated: new Article row + Sentences (library only on scrape path).
 	IngestCreated IngestStatus = iota
-	// IngestExists: (source_id, external_id) already present; no re-extract.
+	// IngestExists: (source_id, external_id) already present; no re-store.
 	IngestExists
 )
 
-// IngestResult is the outcome of Article ingest.
+// IngestResult is the outcome of Article store.
 type IngestResult struct {
 	ArticleID int64
 	Status    IngestStatus
 }
+
+// ExtractResult is the outcome of Sentence extract (opt-in to study).
+type ExtractResult struct {
+	SentenceID       int64
+	ArticleID        int64
+	AlreadyExtracted bool
+	// Candidates is the number of Word candidates persisted (or would-be on re-extract).
+	Candidates int
+	// CardsNew is how many new Card rows were inserted (0 on re-extract of same words).
+	CardsNew int
+}
+
+// Sentinel errors for extract.
+var (
+	ErrSentenceNotFound = errors.New("sentence not found")
+	ErrArticleMismatch  = errors.New("sentence does not belong to article")
+)
 
 // execQuerier is satisfied by *sql.DB and *sql.Tx so Source/Article helpers
 // share one SQL path (no public/tx twin pairs).
@@ -58,17 +75,12 @@ type execQuerier interface {
 	QueryRow(query string, args ...any) *sql.Row
 }
 
-// IngestArticle ensures the Source, then dedupes the Article by
-// (source_id, external_id). On IngestCreated it splits RawText into Sentences,
-// analyzes Word candidates, and persists Words/Cards in one transaction.
-// On IngestExists it returns the existing article id and does not re-analyze
-// (stable Scrape dedupe).
-func (d *DB) IngestArticle(userID int64, src SourceRef, art ArticleInput, a *analyze.Analyzer, now time.Time) (IngestResult, error) {
+// StoreArticle ensures the Source, then dedupes the Article by
+// (source_id, external_id). On IngestCreated it splits RawText into Sentences only.
+// Does not create Words, sentence_words, or Cards (extract-on-tap / ADR 0006).
+func (d *DB) StoreArticle(userID int64, src SourceRef, art ArticleInput, now time.Time) (IngestResult, error) {
 	if d == nil || d.sql == nil {
 		return IngestResult{}, fmt.Errorf("db is nil")
-	}
-	if a == nil {
-		return IngestResult{}, fmt.Errorf("analyzer is nil")
 	}
 	if userID == 0 {
 		return IngestResult{}, fmt.Errorf("userID is required")
@@ -85,10 +97,9 @@ func (d *DB) IngestArticle(userID int64, src SourceRef, art ArticleInput, a *ana
 		fetchedAt = now
 	}
 
-	// Phase 6 size limit: cap raw_text before analyze (rune-safe).
+	// Phase 6 size limit: cap raw_text before store (rune-safe).
 	art.RawText, _ = TruncateRawText(art.RawText)
 
-	// Fast dedupe path: no analyze when Article already stored (stable Scrape re-run).
 	sourceID, err := ensureSource(d.sql, src.Name, src.FeedURL, src.Notes)
 	if err != nil {
 		return IngestResult{}, err
@@ -99,11 +110,7 @@ func (d *DB) IngestArticle(userID int64, src SourceRef, art ArticleInput, a *ana
 		return IngestResult{ArticleID: existingID, Status: IngestExists}, nil
 	}
 
-	// Analyze outside the write transaction so tokenizer failures leave no partial rows.
-	items, err := prepareSentenceItems(art.RawText, a)
-	if err != nil {
-		return IngestResult{}, err
-	}
+	sentences := analyze.SplitSentences(art.RawText)
 
 	tx, err := d.sql.Begin()
 	if err != nil {
@@ -111,7 +118,6 @@ func (d *DB) IngestArticle(userID int64, src SourceRef, art ArticleInput, a *ana
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Re-check inside the tx in case another writer inserted the same key.
 	if existingID, ok, err := lookupArticle(tx, sourceID, art.ExternalID); err != nil {
 		return IngestResult{}, err
 	} else if ok {
@@ -131,8 +137,10 @@ func (d *DB) IngestArticle(userID int64, src SourceRef, art ArticleInput, a *ana
 		return IngestResult{}, err
 	}
 
-	if err := persistSentenceItems(tx, userID, articleID, items, now, d.scheduleParams()); err != nil {
-		return IngestResult{}, err
+	for i, text := range sentences {
+		if _, err := insertSentence(tx, articleID, text, i); err != nil {
+			return IngestResult{}, err
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -141,15 +149,23 @@ func (d *DB) IngestArticle(userID int64, src SourceRef, art ArticleInput, a *ana
 	return IngestResult{ArticleID: articleID, Status: IngestCreated}, nil
 }
 
-// IngestText is the library/manual path: raw Japanese string → Sentences → Words/Cards.
-// Each call creates a new Article under Source "manual" with a unique external_id
-// (always IngestCreated). Use IngestArticle with a stable external_id for Scrape dedupe.
+// IngestText is the library/manual convenience path: store text as an Article under
+// Source "manual", then extract every Sentence (creates Words/Cards).
+// Used by tests and any manual ingest that should immediately enter the queue.
+// User-facing Scrape uses StoreArticle only (ADR 0006).
+//
+// Not a single transaction: StoreArticle commits, then each ExtractSentence commits.
+// If extract fails mid-way, the Article/Sentences remain with a partial set extracted.
+// Callers that need all-or-nothing should not use this helper for product-facing flows.
 func (d *DB) IngestText(userID int64, text string, a *analyze.Analyzer, now time.Time) (IngestResult, error) {
+	if a == nil {
+		return IngestResult{}, fmt.Errorf("analyzer is nil")
+	}
 	extID, err := newManualExternalID()
 	if err != nil {
 		return IngestResult{}, err
 	}
-	return d.IngestArticle(userID, SourceRef{
+	res, err := d.StoreArticle(userID, SourceRef{
 		Name:  ManualSourceName,
 		Notes: "library ingest (not RSS)",
 	}, ArticleInput{
@@ -157,7 +173,139 @@ func (d *DB) IngestText(userID int64, text string, a *analyze.Analyzer, now time
 		Title:      ManualSourceName,
 		RawText:    text,
 		FetchedAt:  now,
-	}, a, now)
+	}, now)
+	if err != nil {
+		return res, err
+	}
+	if err := d.extractAllSentences(userID, res.ArticleID, a, now); err != nil {
+		return res, err
+	}
+	return res, nil
+}
+
+// extractAllSentences runs ExtractSentence for every sentence of the article (order_index).
+// Only used by IngestText (test/manual helper); product scrape never bulk-extracts.
+func (d *DB) extractAllSentences(userID, articleID int64, a *analyze.Analyzer, now time.Time) error {
+	if d == nil || d.sql == nil {
+		return fmt.Errorf("db is nil")
+	}
+	rows, err := d.sql.Query(
+		`SELECT id FROM sentences WHERE article_id = ? ORDER BY order_index ASC, id ASC`,
+		articleID,
+	)
+	if err != nil {
+		return fmt.Errorf("list sentences: %w", err)
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if _, err := d.ExtractSentence(userID, id, a, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ExtractSentence analyzes one Sentence and creates Words / sentence_words / Cards.
+// Idempotent: re-extract does not reset Card schedules; first extracted_at is kept.
+// articleID may be 0 to skip ownership check; otherwise sentence must belong to articleID.
+func (d *DB) ExtractSentence(userID, sentenceID int64, a *analyze.Analyzer, now time.Time) (ExtractResult, error) {
+	return d.ExtractSentenceForArticle(userID, 0, sentenceID, a, now)
+}
+
+// ExtractSentenceForArticle is like ExtractSentence but requires sentence.article_id == articleID
+// when articleID != 0 (HTTP path ownership).
+func (d *DB) ExtractSentenceForArticle(userID, articleID, sentenceID int64, a *analyze.Analyzer, now time.Time) (ExtractResult, error) {
+	if d == nil || d.sql == nil {
+		return ExtractResult{}, fmt.Errorf("db is nil")
+	}
+	if a == nil {
+		return ExtractResult{}, fmt.Errorf("analyzer is nil")
+	}
+	if userID == 0 {
+		return ExtractResult{}, fmt.Errorf("userID is required")
+	}
+	if sentenceID == 0 {
+		return ExtractResult{}, fmt.Errorf("sentenceID is required")
+	}
+
+	var text string
+	var artID int64
+	var extractedAt sql.NullString
+	err := d.sql.QueryRow(
+		`SELECT text, article_id, extracted_at FROM sentences WHERE id = ?`,
+		sentenceID,
+	).Scan(&text, &artID, &extractedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ExtractResult{}, ErrSentenceNotFound
+	}
+	if err != nil {
+		return ExtractResult{}, fmt.Errorf("load sentence: %w", err)
+	}
+	if articleID != 0 && artID != articleID {
+		return ExtractResult{}, ErrArticleMismatch
+	}
+
+	already := extractedAt.Valid && strings.TrimSpace(extractedAt.String) != ""
+	out := ExtractResult{
+		SentenceID:       sentenceID,
+		ArticleID:        artID,
+		AlreadyExtracted: already,
+	}
+
+	// Pure noop re-tap: do not re-analyze or wipe sentence_words (ADR review fix).
+	if already {
+		var n int
+		if err := d.sql.QueryRow(
+			`SELECT COUNT(1) FROM sentence_words WHERE sentence_id = ?`, sentenceID,
+		).Scan(&n); err != nil {
+			return ExtractResult{}, fmt.Errorf("count sentence_words: %w", err)
+		}
+		out.Candidates = n
+		out.CardsNew = 0
+		return out, nil
+	}
+
+	cands, err := a.Candidates(text)
+	if err != nil {
+		return ExtractResult{}, err
+	}
+
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return ExtractResult{}, fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	cardsNew, candCount, err := persistCandidatesTx(tx, userID, sentenceID, cands, now, d.scheduleParams())
+	if err != nil {
+		return ExtractResult{}, err
+	}
+	out.Candidates = candCount
+	out.CardsNew = cardsNew
+
+	nowStr := now.UTC().Format(time.RFC3339)
+	if _, err := tx.Exec(
+		`UPDATE sentences SET extracted_at = ? WHERE id = ? AND (extracted_at IS NULL OR extracted_at = '')`,
+		nowStr, sentenceID,
+	); err != nil {
+		return ExtractResult{}, fmt.Errorf("set extracted_at: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return ExtractResult{}, fmt.Errorf("commit: %w", err)
+	}
+	return out, nil
 }
 
 // EnsureSource inserts a news_sources row by name if missing and returns its id.
@@ -176,7 +324,7 @@ func (d *DB) EnsureSource(name, feedURL, notes string) (int64, error) {
 // new Cards (phase=new) for the learner. Existing cards are left unchanged.
 //
 // Candidates are filtered again for empty/placeholder readings (defense in depth).
-// Prefer IngestArticle / IngestText for full Article pipelines; this remains for
+// Prefer ExtractSentence for the study opt-in path; this remains for
 // tests and callers that already hold Candidates.
 func (d *DB) PersistCandidates(userID, sentenceID int64, candidates []analyze.Candidate, now time.Time) error {
 	if d == nil || d.sql == nil {
@@ -195,42 +343,19 @@ func (d *DB) PersistCandidates(userID, sentenceID int64, candidates []analyze.Ca
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if err := persistCandidatesTx(tx, userID, sentenceID, candidates, now, d.scheduleParams()); err != nil {
+	if _, _, err := persistCandidatesTx(tx, userID, sentenceID, candidates, now, d.scheduleParams()); err != nil {
 		return err
+	}
+	// Mark extracted when using low-level PersistCandidates (tests).
+	nowStr := now.UTC().Format(time.RFC3339)
+	if _, err := tx.Exec(
+		`UPDATE sentences SET extracted_at = ? WHERE id = ? AND (extracted_at IS NULL OR extracted_at = '')`,
+		nowStr, sentenceID,
+	); err != nil {
+		return fmt.Errorf("set extracted_at: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit: %w", err)
-	}
-	return nil
-}
-
-type sentenceItem struct {
-	text  string
-	cands []analyze.Candidate
-}
-
-func prepareSentenceItems(text string, a *analyze.Analyzer) ([]sentenceItem, error) {
-	sentences := analyze.SplitSentences(text)
-	items := make([]sentenceItem, 0, len(sentences))
-	for _, s := range sentences {
-		cands, err := a.Candidates(s)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, sentenceItem{text: s, cands: cands})
-	}
-	return items, nil
-}
-
-func persistSentenceItems(tx *sql.Tx, userID, articleID int64, items []sentenceItem, now time.Time, params schedule.Params) error {
-	for i, it := range items {
-		sid, err := insertSentence(tx, articleID, it.text, i)
-		if err != nil {
-			return err
-		}
-		if err := persistCandidatesTx(tx, userID, sid, it.cands, now, params); err != nil {
-			return err
-		}
 	}
 	return nil
 }
@@ -243,12 +368,14 @@ func newManualExternalID() (string, error) {
 	return "manual-" + hex.EncodeToString(b[:]), nil
 }
 
-func persistCandidatesTx(tx *sql.Tx, userID, sentenceID int64, candidates []analyze.Candidate, now time.Time, params schedule.Params) error {
+// persistCandidatesTx writes sentence_words + new Cards.
+// Returns cardsNew (RowsAffected inserts only) and word-candidate count.
+func persistCandidatesTx(tx *sql.Tx, userID, sentenceID int64, candidates []analyze.Candidate, now time.Time, params schedule.Params) (cardsNew, candCount int, err error) {
 	nowStr := now.UTC().Format(time.RFC3339)
 
-	// Re-extract replaces occurrence rows for this sentence (no duplicates).
+	// Replace occurrence rows for this sentence (no duplicates).
 	if _, err := tx.Exec(`DELETE FROM sentence_words WHERE sentence_id = ?`, sentenceID); err != nil {
-		return fmt.Errorf("clear sentence_words: %w", err)
+		return 0, 0, fmt.Errorf("clear sentence_words: %w", err)
 	}
 
 	for _, c := range candidates {
@@ -265,10 +392,11 @@ func persistCandidatesTx(tx *sql.Tx, userID, sentenceID int64, candidates []anal
 		if lemma == "" || analyze.IsMeCabPlaceholder(lemma) {
 			continue
 		}
+		candCount++
 
 		wordID, err := upsertWord(tx, lemma, reading)
 		if err != nil {
-			return err
+			return 0, 0, err
 		}
 
 		if _, err := tx.Exec(
@@ -276,14 +404,18 @@ func persistCandidatesTx(tx *sql.Tx, userID, sentenceID int64, candidates []anal
 			 VALUES (?, ?, ?, ?, ?, ?)`,
 			sentenceID, wordID, surface, c.CharStart, c.CharEnd, nowStr,
 		); err != nil {
-			return fmt.Errorf("insert sentence_word: %w", err)
+			return 0, 0, fmt.Errorf("insert sentence_word: %w", err)
 		}
 
-		if err := upsertNewCard(tx, userID, wordID, now, params); err != nil {
-			return err
+		inserted, err := upsertNewCard(tx, userID, wordID, now, params)
+		if err != nil {
+			return 0, 0, err
+		}
+		if inserted {
+			cardsNew++
 		}
 	}
-	return nil
+	return cardsNew, candCount, nil
 }
 
 func ensureSource(q execQuerier, name, feedURL, notes string) (int64, error) {
@@ -373,12 +505,13 @@ func upsertWord(q execQuerier, lemma, reading string) (int64, error) {
 	return res.LastInsertId()
 }
 
-func upsertNewCard(q execQuerier, userID, wordID int64, now time.Time, params schedule.Params) error {
+// upsertNewCard inserts a new Card if missing. Returns true when a row was inserted.
+func upsertNewCard(q execQuerier, userID, wordID int64, now time.Time, params schedule.Params) (inserted bool, err error) {
 	// New Card defaults only from schedule.NewCard (sm2-spec / ADR 0005).
 	st := schedule.NewCard(params, now)
 	nowStr := now.UTC().Format(time.RFC3339)
 	dueStr := st.DueAt.UTC().Format(time.RFC3339)
-	_, err := q.Exec(
+	res, err := q.Exec(
 		`INSERT INTO cards (
 			user_id, word_id, phase, learning_step, interval_days, ease,
 			due_at, reps, lapses, created_at, updated_at
@@ -389,7 +522,11 @@ func upsertNewCard(q execQuerier, userID, wordID int64, now time.Time, params sc
 		dueStr, st.Reps, st.Lapses, nowStr, nowStr,
 	)
 	if err != nil {
-		return fmt.Errorf("insert card: %w", err)
+		return false, fmt.Errorf("insert card: %w", err)
 	}
-	return nil
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("card rows affected: %w", err)
+	}
+	return n > 0, nil
 }

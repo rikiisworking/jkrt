@@ -3,6 +3,7 @@ package http
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -17,21 +18,16 @@ import (
 	"github.com/rikiisworking/jkrt/internal/snapshot"
 )
 
-// handleScrape runs dual NHK RSS Scrape and returns per-source JSON
-// (DEVELOPMENT_PLAN HTTP surface: POST /api/scrape).
+// handleScrape runs multi-source RSS Scrape (store Articles/Sentences only; ADR 0006)
+// and returns per-source JSON (DEVELOPMENT_PLAN HTTP surface: POST /api/scrape).
 // HTMX requests (dashboard button) get a small HTML summary fragment.
+// Analyzer is not required here — Sentence extract loads Kagome separately.
 func (a *App) handleScrape(c *fiber.Ctx) error {
 	if a.DB == nil {
 		if c.Get("HX-Request") == "true" {
 			return c.Status(fiber.StatusInternalServerError).SendString("database not configured")
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "database not configured"})
-	}
-	if a.Analyzer == nil {
-		if c.Get("HX-Request") == "true" {
-			return c.Status(fiber.StatusInternalServerError).SendString("analyzer not configured")
-		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "analyzer not configured"})
 	}
 	// Always 200 with partial-success per source (plan: 200 JSON with per-source errors).
 	result := a.newScraper().Run(c.Context(), time.Now().UTC())
@@ -254,6 +250,48 @@ func (a *App) handleArticleDetail(c *fiber.Ctx) error {
 		return c.SendString(articleNotFoundHTML())
 	}
 	return c.SendString(articleDetailHTML(art, sents))
+}
+
+// handleSentenceExtract opts a Sentence into study (Words/Cards) — ADR 0006.
+// Non-HTMX: 302 back to article. HTMX: 200 sentence row partial.
+func (a *App) handleSentenceExtract(c *fiber.Ctx) error {
+	if a.DB == nil {
+		return c.Status(fiber.StatusInternalServerError).SendString("database not configured")
+	}
+	if a.Analyzer == nil {
+		return c.Status(fiber.StatusInternalServerError).SendString("analyzer not configured")
+	}
+	articleID, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil || articleID <= 0 {
+		return c.Status(fiber.StatusBadRequest).SendString("invalid article id")
+	}
+	sentenceID, err := strconv.ParseInt(c.Params("sid"), 10, 64)
+	if err != nil || sentenceID <= 0 {
+		return c.Status(fiber.StatusBadRequest).SendString("invalid sentence id")
+	}
+
+	now := time.Now().UTC()
+	res, err := a.DB.ExtractSentenceForArticle(db.LearnerUserID, articleID, sentenceID, a.Analyzer, now)
+	if err != nil {
+		if errors.Is(err, db.ErrSentenceNotFound) || errors.Is(err, db.ErrArticleMismatch) {
+			return c.Status(fiber.StatusNotFound).SendString("sentence not found")
+		}
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+
+	sent, found, err := a.DB.GetSentence(articleID, sentenceID)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+	if !found {
+		return c.Status(fiber.StatusNotFound).SendString("sentence not found")
+	}
+
+	if c.Get("HX-Request") == "true" {
+		c.Type("html", "utf-8")
+		return c.SendString(sentenceRowHTML(articleID, sent, res))
+	}
+	return c.Redirect(fmt.Sprintf("/articles/%d", articleID), fiber.StatusFound)
 }
 
 func (a *App) handleLoginGet(c *fiber.Ctx) error {

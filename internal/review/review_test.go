@@ -29,6 +29,51 @@ func TestNextEmptyQueue(t *testing.T) {
 	}
 }
 
+// Store-only scrape path leaves Next empty until Sentence extract (ADR 0006).
+func TestNextEmptyUntilExtract(t *testing.T) {
+	d := openTestDB(t)
+	seedUser(t, d)
+	a := mustAnalyzer(t)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	store, err := d.StoreArticle(db.LearnerUserID, db.SourceRef{Name: "s"}, db.ArticleInput{
+		ExternalID: "e1",
+		RawText:    "経済政策を発表した。市場は反応した。",
+		FetchedAt:  now,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := review.New(d, schedule.DefaultParams())
+	res, err := svc.Next(db.LearnerUserID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Empty {
+		t.Fatal("queue must be empty before extract")
+	}
+
+	var sid int64
+	if err := d.SQL().QueryRow(
+		`SELECT id FROM sentences WHERE article_id = ? ORDER BY order_index ASC LIMIT 1`,
+		store.ArticleID,
+	).Scan(&sid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ExtractSentence(db.LearnerUserID, sid, a, now); err != nil {
+		t.Fatal(err)
+	}
+	res2, err := svc.Next(db.LearnerUserID, now)
+	if err != nil || res2.Empty {
+		t.Fatalf("expected card after extract: empty=%v err=%v", res2.Empty, err)
+	}
+	if res2.Item.SentenceID != sid {
+		t.Fatalf("context sentence: got %d want extracted %d", res2.Item.SentenceID, sid)
+	}
+	if res2.Item.Sentence == "" || res2.Item.Lemma == "" {
+		t.Fatalf("item incomplete: %+v", res2.Item)
+	}
+}
+
 func TestNextNilService(t *testing.T) {
 	var svc *review.Service
 	_, err := svc.Next(1, time.Now().UTC())
@@ -992,17 +1037,13 @@ func TestGradeNilService(t *testing.T) {
 	}
 }
 
-func TestServiceParamsAndFocusReading(t *testing.T) {
+func TestServiceParams(t *testing.T) {
 	p := schedule.DefaultParams()
 	p.NewPerDay = 7
 	svc := review.New(nil, p)
 	got := svc.Params()
 	if got.NewPerDay != 7 {
 		t.Fatalf("Params NewPerDay: %d", got.NewPerDay)
-	}
-	item := review.Item{Reading: "  けいざい  "}
-	if item.FocusReading() != "けいざい" {
-		t.Fatalf("FocusReading: %q", item.FocusReading())
 	}
 }
 

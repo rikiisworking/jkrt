@@ -1041,34 +1041,49 @@ func TestScrapeMissingDB(t *testing.T) {
 	}
 }
 
-func TestScrapeMissingAnalyzer(t *testing.T) {
+// Scrape is store-only (ADR 0006); Analyzer is not required.
+func TestScrapeOKWithoutAnalyzer(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	database, err := db.Open(dbPath, filepath.Join("..", "..", "migrations"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = database.Close() })
+	if err := auth.EnsureLearnerRow(auth.NewStore(database.SQL())); err != nil {
+		t.Fatal(err)
+	}
 	app := jkrthttp.New(jkrthttp.Options{
 		Config: config.Config{
 			AuthEnabled:   false,
 			NHKMainRSSURL: "https://fixture.test/nhk_main.xml",
+			NHKEasyRSSURL: "https://fixture.test/nhk_easy.xml",
 		},
 		DB:         database,
 		Analyzer:   nil,
 		HTTPClient: loadRSSFixtures(t),
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/scrape", nil)
-	resp, err := app.Fiber.Test(req)
+	resp, err := app.Fiber.Test(req, 60_000)
 	if err != nil {
 		t.Fatalf("Test: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("status: got %d want 500", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d want 200 body=%s", resp.StatusCode, body)
 	}
-	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "analyzer") {
-		t.Fatalf("body: %s", body)
+	var articles, cards int
+	if err := database.SQL().QueryRow(`SELECT COUNT(1) FROM articles`).Scan(&articles); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SQL().QueryRow(`SELECT COUNT(1) FROM cards`).Scan(&cards); err != nil {
+		t.Fatal(err)
+	}
+	if articles < 1 {
+		t.Fatal("expected articles after scrape without analyzer")
+	}
+	if cards != 0 {
+		t.Fatalf("scrape without analyzer must not create cards: %d", cards)
 	}
 }
 
@@ -1084,8 +1099,12 @@ func TestReviewEmptyQueue(t *testing.T) {
 		t.Fatalf("status: %d", resp.StatusCode)
 	}
 	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "Queue empty") {
+	s := string(body)
+	if !strings.Contains(s, "Queue empty") {
 		t.Fatalf("expected empty queue HTML, body=%s", body)
+	}
+	if !strings.Contains(s, "Add to review") && !strings.Contains(s, "Articles") {
+		t.Fatalf("empty queue should guide to Articles / extract, body=%s", s)
 	}
 }
 
@@ -1577,6 +1596,10 @@ func TestArticlesListAndDetail(t *testing.T) {
 	if !strings.Contains(ds, "Sentence") {
 		t.Fatal("expected sentence labels")
 	}
+	// IngestText extracts all sentences → already in queue.
+	if !strings.Contains(ds, "In queue") {
+		t.Fatalf("expected In queue badge after extract, body=%s", ds)
+	}
 }
 
 func TestArticleNotFound(t *testing.T) {
@@ -1904,5 +1927,362 @@ func TestExportWithAuthCookie(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status: %d", resp.StatusCode)
+	}
+}
+
+// --- Extract-on-tap (ADR 0006) ---
+
+func TestExtractRequiresAuth(t *testing.T) {
+	app := newTestApp(t, true)
+	req := httptest.NewRequest(http.MethodPost, "/articles/1/sentences/1/extract", nil)
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	// HTML POST without cookie → 302 /login (same as other protected HTML).
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("status: got %d want 302", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); loc != "/login" && !strings.Contains(loc, "login") {
+		t.Fatalf("Location: %q", loc)
+	}
+}
+
+func TestExtractInvalidIDs(t *testing.T) {
+	app := newTestApp(t, false)
+	for _, path := range []string{
+		"/articles/0/sentences/1/extract",
+		"/articles/1/sentences/0/extract",
+		"/articles/abc/sentences/1/extract",
+		"/articles/1/sentences/xyz/extract",
+	} {
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		resp, err := app.Fiber.Test(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("%s: status got %d want 400 body=%s", path, resp.StatusCode, body)
+		}
+	}
+}
+
+func TestScrapeThenReviewEmptyUntilExtract(t *testing.T) {
+	app := newTestAppOpts(t, false, "", loadRSSFixtures(t))
+	// Scrape library only
+	req := httptest.NewRequest(http.MethodPost, "/api/scrape", nil)
+	resp, err := app.Fiber.Test(req, 60_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("scrape status: %d", resp.StatusCode)
+	}
+
+	var cards int
+	if err := app.DB.SQL().QueryRow(`SELECT COUNT(1) FROM cards`).Scan(&cards); err != nil {
+		t.Fatal(err)
+	}
+	if cards != 0 {
+		t.Fatalf("scrape must not create cards: %d", cards)
+	}
+
+	rreq := httptest.NewRequest(http.MethodGet, "/review", nil)
+	rresp, err := app.Fiber.Test(rreq, 30_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rresp.Body.Close()
+	body, _ := io.ReadAll(rresp.Body)
+	if !strings.Contains(string(body), "Queue empty") {
+		t.Fatalf("expected empty queue after scrape only, body=%s", body)
+	}
+	if !strings.Contains(string(body), "Articles") {
+		t.Fatal("empty queue should point to Articles")
+	}
+
+	// Extract first sentence of first article
+	var articleID, sentenceID int64
+	if err := app.DB.SQL().QueryRow(`SELECT id FROM articles ORDER BY id ASC LIMIT 1`).Scan(&articleID); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.SQL().QueryRow(
+		`SELECT id FROM sentences WHERE article_id = ? ORDER BY order_index ASC LIMIT 1`, articleID,
+	).Scan(&sentenceID); err != nil {
+		t.Fatal(err)
+	}
+
+	ereq := httptest.NewRequest(http.MethodPost,
+		fmt.Sprintf("/articles/%d/sentences/%d/extract", articleID, sentenceID), nil)
+	eresp, err := app.Fiber.Test(ereq, 60_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eresp.Body.Close()
+	if eresp.StatusCode != http.StatusFound {
+		b, _ := io.ReadAll(eresp.Body)
+		t.Fatalf("extract status: %d body=%s", eresp.StatusCode, b)
+	}
+
+	if err := app.DB.SQL().QueryRow(`SELECT COUNT(1) FROM cards`).Scan(&cards); err != nil {
+		t.Fatal(err)
+	}
+	if cards == 0 {
+		t.Fatal("expected cards after extract")
+	}
+
+	rreq2 := httptest.NewRequest(http.MethodGet, "/review", nil)
+	rresp2, err := app.Fiber.Test(rreq2, 30_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rresp2.Body.Close()
+	body2, _ := io.ReadAll(rresp2.Body)
+	if strings.Contains(string(body2), "Queue empty") {
+		t.Fatalf("queue should have card after extract, body=%s", body2)
+	}
+	if !strings.Contains(string(body2), `name="card_id"`) {
+		t.Fatalf("expected review form, body=%s", body2)
+	}
+}
+
+func TestExtractWithAuthAndHTMX(t *testing.T) {
+	app := newTestApp(t, true)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	store, err := app.DB.StoreArticle(db.LearnerUserID, db.SourceRef{Name: "t"}, db.ArticleInput{
+		ExternalID: "x1",
+		RawText:    "経済政策を発表した。",
+		FetchedAt:  now,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sid int64
+	if err := app.DB.SQL().QueryRow(`SELECT id FROM sentences WHERE article_id = ?`, store.ArticleID).Scan(&sid); err != nil {
+		t.Fatal(err)
+	}
+
+	cookie := loginCookie(t, app)
+
+	// Unextracted detail shows Add to review
+	dreq := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/articles/%d", store.ArticleID), nil)
+	dreq.AddCookie(&http.Cookie{Name: auth.CookieName, Value: cookie})
+	dresp, err := app.Fiber.Test(dreq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dresp.Body.Close()
+	dbody, _ := io.ReadAll(dresp.Body)
+	if !strings.Contains(string(dbody), "Add to review") {
+		t.Fatalf("expected Add to review, body=%s", dbody)
+	}
+	if strings.Contains(string(dbody), "In queue") {
+		t.Fatal("must not show In queue before extract")
+	}
+
+	ereq := httptest.NewRequest(http.MethodPost,
+		fmt.Sprintf("/articles/%d/sentences/%d/extract", store.ArticleID, sid), nil)
+	ereq.Header.Set("HX-Request", "true")
+	ereq.AddCookie(&http.Cookie{Name: auth.CookieName, Value: cookie})
+	eresp, err := app.Fiber.Test(ereq, 60_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eresp.Body.Close()
+	if eresp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(eresp.Body)
+		t.Fatalf("status: %d body=%s", eresp.StatusCode, b)
+	}
+	ebody, _ := io.ReadAll(eresp.Body)
+	es := string(ebody)
+	if strings.HasPrefix(strings.TrimSpace(es), "<!DOCTYPE") {
+		t.Fatal("HTMX partial must not be full document")
+	}
+	if !strings.Contains(es, "In queue") {
+		t.Fatalf("expected In queue badge for kanji sentence, body=%s", es)
+	}
+	if !strings.Contains(es, "Added") && !strings.Contains(es, "Words linked") && !strings.Contains(es, "Already") {
+		t.Fatalf("expected extract feedback, body=%s", es)
+	}
+	if strings.Contains(es, "Add to review") {
+		t.Fatal("must not show Add to review after extract")
+	}
+
+	var cards1 int
+	if err := app.DB.SQL().QueryRow(`SELECT COUNT(1) FROM cards`).Scan(&cards1); err != nil {
+		t.Fatal(err)
+	}
+	if cards1 < 1 {
+		t.Fatal("cards missing")
+	}
+
+	// Idempotent second extract
+	ereq2 := httptest.NewRequest(http.MethodPost,
+		fmt.Sprintf("/articles/%d/sentences/%d/extract", store.ArticleID, sid), nil)
+	ereq2.Header.Set("HX-Request", "true")
+	ereq2.AddCookie(&http.Cookie{Name: auth.CookieName, Value: cookie})
+	eresp2, err := app.Fiber.Test(ereq2, 60_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eresp2.Body.Close()
+	if eresp2.StatusCode != http.StatusOK {
+		t.Fatalf("second extract: %d", eresp2.StatusCode)
+	}
+	ebody2, _ := io.ReadAll(eresp2.Body)
+	es2 := string(ebody2)
+	if !strings.Contains(es2, "Already in review") {
+		t.Fatalf("re-extract feedback: want Already in review, body=%s", es2)
+	}
+	var cards2 int
+	if err := app.DB.SQL().QueryRow(`SELECT COUNT(1) FROM cards`).Scan(&cards2); err != nil {
+		t.Fatal(err)
+	}
+	if cards2 != cards1 {
+		t.Fatalf("cards grew on re-extract: %d → %d", cards1, cards2)
+	}
+}
+
+func TestExtractNonHTMXRedirectsToArticle(t *testing.T) {
+	app := newTestApp(t, false)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	store, err := app.DB.StoreArticle(db.LearnerUserID, db.SourceRef{Name: "t"}, db.ArticleInput{
+		ExternalID: "redir",
+		RawText:    "経済政策を発表した。",
+		FetchedAt:  now,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sid int64
+	if err := app.DB.SQL().QueryRow(`SELECT id FROM sentences WHERE article_id = ?`, store.ArticleID).Scan(&sid); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost,
+		fmt.Sprintf("/articles/%d/sentences/%d/extract", store.ArticleID, sid), nil)
+	// No HX-Request → full-page form POST
+	resp, err := app.Fiber.Test(req, 60_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d want 302 body=%s", resp.StatusCode, b)
+	}
+	wantLoc := fmt.Sprintf("/articles/%d", store.ArticleID)
+	if loc := resp.Header.Get("Location"); loc != wantLoc {
+		t.Fatalf("Location: got %q want %q", loc, wantLoc)
+	}
+	var cards int
+	if err := app.DB.SQL().QueryRow(`SELECT COUNT(1) FROM cards`).Scan(&cards); err != nil {
+		t.Fatal(err)
+	}
+	if cards < 1 {
+		t.Fatal("extract must still create cards on non-HTMX path")
+	}
+}
+
+func TestExtractKanaOnlyShowsNoStudyWords(t *testing.T) {
+	app := newTestApp(t, false)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	store, err := app.DB.StoreArticle(db.LearnerUserID, db.SourceRef{Name: "t"}, db.ArticleInput{
+		ExternalID: "kana",
+		RawText:    "あいうえお。",
+		FetchedAt:  now,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sid int64
+	if err := app.DB.SQL().QueryRow(`SELECT id FROM sentences WHERE article_id = ?`, store.ArticleID).Scan(&sid); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost,
+		fmt.Sprintf("/articles/%d/sentences/%d/extract", store.ArticleID, sid), nil)
+	req.Header.Set("HX-Request", "true")
+	resp, err := app.Fiber.Test(req, 60_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: %d body=%s", resp.StatusCode, b)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	if strings.Contains(s, "In queue") {
+		t.Fatalf("kana-only must not show In queue, body=%s", s)
+	}
+	if !strings.Contains(s, "No study words") {
+		t.Fatalf("expected No study words badge, body=%s", s)
+	}
+	if !strings.Contains(s, "No kanji words to study") {
+		t.Fatalf("expected zero-candidate feedback, body=%s", s)
+	}
+	if strings.Contains(s, "Add to review") {
+		t.Fatal("must not show Add to review after extract")
+	}
+	var cards int
+	if err := app.DB.SQL().QueryRow(`SELECT COUNT(1) FROM cards`).Scan(&cards); err != nil {
+		t.Fatal(err)
+	}
+	if cards != 0 {
+		t.Fatalf("kana-only extract must not create cards: %d", cards)
+	}
+	var ext string
+	if err := app.DB.SQL().QueryRow(`SELECT extracted_at FROM sentences WHERE id = ?`, sid).Scan(&ext); err != nil || ext == "" {
+		t.Fatalf("must mark extracted_at: %q err=%v", ext, err)
+	}
+}
+
+func TestExtractSentenceWrongArticle(t *testing.T) {
+	app := newTestApp(t, false)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	a1, err := app.DB.StoreArticle(db.LearnerUserID, db.SourceRef{Name: "a"}, db.ArticleInput{
+		ExternalID: "1", RawText: "経済。", FetchedAt: now,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a2, err := app.DB.StoreArticle(db.LearnerUserID, db.SourceRef{Name: "b"}, db.ArticleInput{
+		ExternalID: "2", RawText: "政策。", FetchedAt: now,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sid1 int64
+	if err := app.DB.SQL().QueryRow(`SELECT id FROM sentences WHERE article_id = ?`, a1.ArticleID).Scan(&sid1); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost,
+		fmt.Sprintf("/articles/%d/sentences/%d/extract", a2.ArticleID, sid1), nil)
+	resp, err := app.Fiber.Test(req, 30_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status: got %d want 404", resp.StatusCode)
+	}
+}
+
+func TestExtractNotFound(t *testing.T) {
+	app := newTestApp(t, false)
+	req := httptest.NewRequest(http.MethodPost, "/articles/1/sentences/99999/extract", nil)
+	resp, err := app.Fiber.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status: got %d want 404", resp.StatusCode)
 	}
 }

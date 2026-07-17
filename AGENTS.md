@@ -3,7 +3,7 @@
 ## Project overview
 
 - **Name**: Japanese Kanji Reading Trainer (JKRT)
-- **Goal**: Accelerate N2 → N1 **reading** via real Japanese news: Scrape RSS → Sentences → **Words** (lemma + reading) → Anki-like **Card** Review in sentence context.
+- **Goal**: Accelerate N2 → N1 **reading** via real Japanese news: Scrape RSS → Articles/Sentences library → learner **Sentence extract** → **Words**/Cards → Anki-like **Card** Review in sentence context.
 - **Target user**: Self (N2, Tokyo-based backend engineer).
 - **Core value**: Automated exposure to kanji-bearing **words** in news. **No default furigana**; reveal on demand.
 - **Language**: Domain terms in [`CONTEXT.md`](CONTEXT.md). Do not invent parallel vocabulary.
@@ -48,7 +48,7 @@ If something is unspecified, **do not invent product behavior** — implement th
 - **Frontend**: HTMX + Tailwind (**CDN through Phase 3**). Templates/static via Fiber. No heavy SPA.  
 - **Database**: SQLite (`modernc.org/sqlite`). Schema: `DEVELOPMENT_PLAN.md`.  
 - **Deploy**: `go run ./cmd/server`. Cloudflare Tunnel only with auth on.  
-- **External**: RSS only — multi-publisher defaults (NHK main/Easy, Yahoo topics, ITmedia, BBC Japanese); always all on Scrape. Analyzer: **Kagome** (IPA) pure-Go.  
+- **External**: RSS only — multi-publisher defaults; Scrape stores library only; Cards via extract-on-tap. Analyzer: **Kagome** (IPA) pure-Go.  
 - **Scheduler**: [`docs/sm2-spec.md`](docs/sm2-spec.md) only.  
 - **Security**: Password + **signed session cookie**; `JKRT_AUTH=off` for local only.
 
@@ -96,7 +96,7 @@ golangci-lint run   # when configured
 
 **Phase 6 (Stats, export, performance) — complete** (acceptance `go test ./...` green). `GET /api/stats`, `GET /api/export?format=json|csv`, dashboard library/phase numbers + export links, `migrations/002_perf.sql`, ingest `MaxRawTextRunes` truncate, export row caps. **v1 planned phases 0–6 are done.**
 
-**Next:** No further planned phase. Only implement work the user explicitly requests.
+**Next:** Extract-on-tap (ADR 0006) implemented on branch `feat/extract-on-tap`. Further work only on explicit request.
 
 ## Safety
 
