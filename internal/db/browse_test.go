@@ -28,12 +28,12 @@ func TestBrowseEmpty(t *testing.T) {
 		t.Fatal("expected no last fetch")
 	}
 
-	n, err := d.CountArticles()
+	lc, err := d.LibraryCounts(db.LearnerUserID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 0 {
-		t.Fatalf("count: %d", n)
+	if lc.Articles != 0 {
+		t.Fatalf("articles: %d", lc.Articles)
 	}
 
 	_, _, found, err := d.GetArticle(999)
@@ -59,12 +59,12 @@ func TestBrowseListAndDetail(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	n, err := d.CountArticles()
+	lc, err := d.LibraryCounts(db.LearnerUserID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 1 {
-		t.Fatalf("count: %d", n)
+	if lc.Articles != 1 {
+		t.Fatalf("articles: %d", lc.Articles)
 	}
 
 	fetched, ok, err := d.LastArticleFetchedAt()
@@ -203,7 +203,7 @@ func TestBrowseNilDB(t *testing.T) {
 	if _, _, err := d.LastArticleFetchedAt(); err == nil {
 		t.Fatal("LastArticleFetchedAt nil want error")
 	}
-	if _, err := d.CountArticles(); err == nil {
-		t.Fatal("CountArticles nil want error")
+	if _, err := d.LibraryCounts(1); err == nil {
+		t.Fatal("LibraryCounts nil want error")
 	}
 }

@@ -547,8 +547,3 @@ func buildSpans(sentence string, occs []wordOcc, focusWordID int64, p schedule.P
 	}
 	return spans
 }
-
-// FocusReading returns the trimmed Reading for the focus Word.
-func (i Item) FocusReading() string {
-	return strings.TrimSpace(i.Reading)
-}

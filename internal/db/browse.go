@@ -175,15 +175,3 @@ func (d *DB) LastArticleFetchedAt() (fetchedAt string, ok bool, err error) {
 	}
 	return raw.String, true, nil
 }
-
-// CountArticles returns the total number of Article rows.
-func (d *DB) CountArticles() (int, error) {
-	if d == nil || d.sql == nil {
-		return 0, fmt.Errorf("db is nil")
-	}
-	var n int
-	if err := d.sql.QueryRow(`SELECT COUNT(1) FROM articles`).Scan(&n); err != nil {
-		return 0, fmt.Errorf("count articles: %w", err)
-	}
-	return n, nil
-}

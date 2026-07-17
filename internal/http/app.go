@@ -137,8 +137,3 @@ func (a *App) newScraper() *scrape.Scraper {
 func (a *App) Listen() error {
 	return a.Fiber.Listen(a.Config.Addr)
 }
-
-// Shutdown gracefully shuts down the server.
-func (a *App) Shutdown() error {
-	return a.Fiber.Shutdown()
-}

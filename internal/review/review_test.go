@@ -1037,17 +1037,13 @@ func TestGradeNilService(t *testing.T) {
 	}
 }
 
-func TestServiceParamsAndFocusReading(t *testing.T) {
+func TestServiceParams(t *testing.T) {
 	p := schedule.DefaultParams()
 	p.NewPerDay = 7
 	svc := review.New(nil, p)
 	got := svc.Params()
 	if got.NewPerDay != 7 {
 		t.Fatalf("Params NewPerDay: %d", got.NewPerDay)
-	}
-	item := review.Item{Reading: "  けいざい  "}
-	if item.FocusReading() != "けいざい" {
-		t.Fatalf("FocusReading: %q", item.FocusReading())
 	}
 }
 

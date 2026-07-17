@@ -177,14 +177,15 @@ func (d *DB) IngestText(userID int64, text string, a *analyze.Analyzer, now time
 	if err != nil {
 		return res, err
 	}
-	if err := d.ExtractAllSentences(userID, res.ArticleID, a, now); err != nil {
+	if err := d.extractAllSentences(userID, res.ArticleID, a, now); err != nil {
 		return res, err
 	}
 	return res, nil
 }
 
-// ExtractAllSentences runs ExtractSentence for every sentence of the article (order_index).
-func (d *DB) ExtractAllSentences(userID, articleID int64, a *analyze.Analyzer, now time.Time) error {
+// extractAllSentences runs ExtractSentence for every sentence of the article (order_index).
+// Only used by IngestText (test/manual helper); product scrape never bulk-extracts.
+func (d *DB) extractAllSentences(userID, articleID int64, a *analyze.Analyzer, now time.Time) error {
 	if d == nil || d.sql == nil {
 		return fmt.Errorf("db is nil")
 	}
